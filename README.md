@@ -69,6 +69,7 @@ Double-click or run from your command prompt:
 ```cmd
 build.bat
 ```
+If CMake is not installed, the script automatically installs it with `winget`.
 The optimized executable binary will be generated at:
 ```
 build\Release\discord-cli.exe
