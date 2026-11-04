@@ -190,12 +190,38 @@ bool discord_api_fetch_messages(const char *token, const char *channel_id, int l
         cJSON *content = cJSON_GetObjectItemCaseSensitive(item, "content");
         cJSON *author = cJSON_GetObjectItemCaseSensitive(item, "author");
         cJSON *timestamp = cJSON_GetObjectItemCaseSensitive(item, "timestamp");
+        cJSON *attachments = cJSON_GetObjectItemCaseSensitive(item, "attachments");
+        cJSON *stickers = cJSON_GetObjectItemCaseSensitive(item, "sticker_items");
+        cJSON *embeds = cJSON_GetObjectItemCaseSensitive(item, "embeds");
 
         DiscordMessage *msg = &out_msgs[out_idx++];
         memset(msg, 0, sizeof(DiscordMessage));
 
         if (cJSON_IsString(mid)) strncpy_s(msg->id, sizeof(msg->id), mid->valuestring, _TRUNCATE);
         if (cJSON_IsString(content)) strncpy_s(msg->content, sizeof(msg->content), content->valuestring, _TRUNCATE);
+
+        int num_att = (cJSON_IsArray(attachments)) ? cJSON_GetArraySize(attachments) : 0;
+        if (num_att > 0) {
+            msg->has_attachment = true;
+            cJSON *first_att = cJSON_GetArrayItem(attachments, 0);
+            cJSON *fname = first_att ? cJSON_GetObjectItemCaseSensitive(first_att, "filename") : NULL;
+            if (cJSON_IsString(fname) && fname->valuestring) {
+                if (num_att > 1) {
+                    snprintf(msg->attachment_name, sizeof(msg->attachment_name), "%s (+%d)", fname->valuestring, num_att - 1);
+                } else {
+                    strncpy_s(msg->attachment_name, sizeof(msg->attachment_name), fname->valuestring, _TRUNCATE);
+                }
+            }
+        } else if (cJSON_IsArray(stickers) && cJSON_GetArraySize(stickers) > 0) {
+            msg->has_attachment = true;
+            cJSON *first_stk = cJSON_GetArrayItem(stickers, 0);
+            cJSON *sname = first_stk ? cJSON_GetObjectItemCaseSensitive(first_stk, "name") : NULL;
+            if (cJSON_IsString(sname) && sname->valuestring) {
+                snprintf(msg->attachment_name, sizeof(msg->attachment_name), "sticker: %s", sname->valuestring);
+            }
+        } else if (cJSON_IsArray(embeds) && cJSON_GetArraySize(embeds) > 0 && strlen(msg->content) == 0) {
+            msg->has_attachment = true;
+        }
 
         if (author) {
             cJSON *aid = cJSON_GetObjectItemCaseSensitive(author, "id");

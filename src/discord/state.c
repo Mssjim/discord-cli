@@ -464,36 +464,70 @@ void discord_state_handle_message_create(DiscordState *state, const char *json_s
 
     // If message is in the currently viewed channel, append to chat history
     if (strlen(state->active_channel_id) > 0 && strcmp(state->active_channel_id, cid->valuestring) == 0) {
-        if (state->current_message_count < MAX_CACHED_MESSAGES) {
-            DiscordMessage *msg = &state->current_messages[state->current_message_count++];
-            memset(msg, 0, sizeof(DiscordMessage));
-            if (cJSON_IsString(mid)) safe_strcpy(msg->id, sizeof(msg->id), mid->valuestring);
-            if (cJSON_IsString(content)) safe_strcpy(msg->content, sizeof(msg->content), content->valuestring);
+        DiscordMessage local_msg;
+        memset(&local_msg, 0, sizeof(DiscordMessage));
+        if (cJSON_IsString(mid)) safe_strcpy(local_msg.id, sizeof(local_msg.id), mid->valuestring);
+        if (cJSON_IsString(content)) safe_strcpy(local_msg.content, sizeof(local_msg.content), content->valuestring);
 
-            if (author) {
-                cJSON *aid = cJSON_GetObjectItemCaseSensitive(author, "id");
-                cJSON *aname = cJSON_GetObjectItemCaseSensitive(author, "username");
-                cJSON *agname = cJSON_GetObjectItemCaseSensitive(author, "global_name");
+        cJSON *attachments = cJSON_GetObjectItemCaseSensitive(d, "attachments");
+        cJSON *stickers = cJSON_GetObjectItemCaseSensitive(d, "sticker_items");
+        cJSON *embeds = cJSON_GetObjectItemCaseSensitive(d, "embeds");
 
-                if (cJSON_IsString(aid)) safe_strcpy(msg->author_id, sizeof(msg->author_id), aid->valuestring);
-                if (cJSON_IsString(aname)) safe_strcpy(msg->author_name, sizeof(msg->author_name), aname->valuestring);
-                if (cJSON_IsString(agname) && agname->valuestring) {
-                    safe_strcpy(msg->author_global_name, sizeof(msg->author_global_name), agname->valuestring);
+        int num_att = (cJSON_IsArray(attachments)) ? cJSON_GetArraySize(attachments) : 0;
+        if (num_att > 0) {
+            local_msg.has_attachment = true;
+            cJSON *first_att = cJSON_GetArrayItem(attachments, 0);
+            cJSON *fname = first_att ? cJSON_GetObjectItemCaseSensitive(first_att, "filename") : NULL;
+            if (cJSON_IsString(fname) && fname->valuestring) {
+                if (num_att > 1) {
+                    snprintf(local_msg.attachment_name, sizeof(local_msg.attachment_name), "%s (+%d)", fname->valuestring, num_att - 1);
                 } else {
-                    safe_strcpy(msg->author_global_name, sizeof(msg->author_global_name), msg->author_name);
+                    safe_strcpy(local_msg.attachment_name, sizeof(local_msg.attachment_name), fname->valuestring);
                 }
             }
+        } else if (cJSON_IsArray(stickers) && cJSON_GetArraySize(stickers) > 0) {
+            local_msg.has_attachment = true;
+            cJSON *first_stk = cJSON_GetArrayItem(stickers, 0);
+            cJSON *sname = first_stk ? cJSON_GetObjectItemCaseSensitive(first_stk, "name") : NULL;
+            if (cJSON_IsString(sname) && sname->valuestring) {
+                snprintf(local_msg.attachment_name, sizeof(local_msg.attachment_name), "sticker: %s", sname->valuestring);
+            }
+        } else if (cJSON_IsArray(embeds) && cJSON_GetArraySize(embeds) > 0 && strlen(local_msg.content) == 0) {
+            local_msg.has_attachment = true;
+        }
 
-            if (cJSON_IsString(timestamp) && strlen(timestamp->valuestring) >= 16) {
-                const char *t = strchr(timestamp->valuestring, 'T');
-                if (t && strlen(t) >= 6) {
-                    snprintf(msg->timestamp, sizeof(msg->timestamp), "%.5s", t + 1);
-                } else {
-                    safe_strcpy(msg->timestamp, sizeof(msg->timestamp), "now");
-                }
+        if (author) {
+            cJSON *aid = cJSON_GetObjectItemCaseSensitive(author, "id");
+            cJSON *aname = cJSON_GetObjectItemCaseSensitive(author, "username");
+            cJSON *agname = cJSON_GetObjectItemCaseSensitive(author, "global_name");
+
+            if (cJSON_IsString(aid)) safe_strcpy(local_msg.author_id, sizeof(local_msg.author_id), aid->valuestring);
+            if (cJSON_IsString(aname)) safe_strcpy(local_msg.author_name, sizeof(local_msg.author_name), aname->valuestring);
+            if (cJSON_IsString(agname) && agname->valuestring) {
+                safe_strcpy(local_msg.author_global_name, sizeof(local_msg.author_global_name), agname->valuestring);
             } else {
-                safe_strcpy(msg->timestamp, sizeof(msg->timestamp), "now");
+                safe_strcpy(local_msg.author_global_name, sizeof(local_msg.author_global_name), local_msg.author_name);
             }
+        }
+
+        if (cJSON_IsString(timestamp) && strlen(timestamp->valuestring) >= 16) {
+            const char *t = strchr(timestamp->valuestring, 'T');
+            if (t && strlen(t) >= 6) {
+                snprintf(local_msg.timestamp, sizeof(local_msg.timestamp), "%.5s", t + 1);
+            } else {
+                safe_strcpy(local_msg.timestamp, sizeof(local_msg.timestamp), "now");
+            }
+        } else {
+            safe_strcpy(local_msg.timestamp, sizeof(local_msg.timestamp), "now");
+        }
+
+        if (state->current_message_count < MAX_CACHED_MESSAGES) {
+            state->current_messages[state->current_message_count++] = local_msg;
+        } else {
+            for (int i = 0; i < MAX_CACHED_MESSAGES - 1; i++) {
+                state->current_messages[i] = state->current_messages[i + 1];
+            }
+            state->current_messages[MAX_CACHED_MESSAGES - 1] = local_msg;
         }
         state->needs_redraw = true;
     } else {

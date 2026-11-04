@@ -315,35 +315,65 @@ static void render_chat(UIState *ui, DiscordState *state) {
     if (max_chat_lines < 2) max_chat_lines = 2;
 
     int total_msgs = state->current_message_count;
-    int max_scroll = (total_msgs > max_chat_lines) ? (total_msgs - max_chat_lines) : 0;
+    int max_scroll = (total_msgs > 1) ? (total_msgs - 1) : 0;
     if (ui->chat_scroll_offset > max_scroll) ui->chat_scroll_offset = max_scroll;
     if (ui->chat_scroll_offset < 0) ui->chat_scroll_offset = 0;
 
-    int start_msg = 0;
-    int end_msg = total_msgs;
+    int target_end = total_msgs - ui->chat_scroll_offset;
+    if (target_end < 0) target_end = 0;
+    if (target_end > total_msgs) target_end = total_msgs;
 
-    if (total_msgs > max_chat_lines) {
-        end_msg = total_msgs - ui->chat_scroll_offset;
-        start_msg = end_msg - max_chat_lines;
-        if (start_msg < 0) {
-            start_msg = 0;
-            end_msg = max_chat_lines;
+    int lines_used = 0;
+    int start_msg = target_end;
+
+    for (int i = target_end - 1; i >= 0; i--) {
+        DiscordMessage *m = &state->current_messages[i];
+        int lines_for_this_msg = (m->has_attachment && strlen(m->content) > 0) ? 2 : 1;
+        if (lines_used + lines_for_this_msg > max_chat_lines) {
+            break;
         }
+        lines_used += lines_for_this_msg;
+        start_msg = i;
     }
 
     if (total_msgs == 0) {
         printf("  %sNo recent messages or loading...%s\n\n", COLOR_DIM, COLOR_RESET);
     } else {
-        for (int i = start_msg; i < end_msg; i++) {
+        for (int i = start_msg; i < target_end; i++) {
             DiscordMessage *m = &state->current_messages[i];
             bool is_self = (strlen(state->user_id) > 0 && strcmp(m->author_id, state->user_id) == 0);
+            const char *author_color = is_self ? COLOR_GREEN : COLOR_CYAN;
+            const char *author_name = (strlen(m->author_global_name) > 0 ? m->author_global_name : m->author_name);
 
-            printf("%s[%s]%s %s%s%s: %s\n",
-                   COLOR_DIM, m->timestamp, COLOR_RESET,
-                   (is_self ? COLOR_GREEN : COLOR_CYAN),
-                   (strlen(m->author_global_name) > 0 ? m->author_global_name : m->author_name),
-                   COLOR_RESET,
-                   m->content);
+            if (m->has_attachment) {
+                char att_str[160];
+                if (strlen(m->attachment_name) > 0) {
+                    snprintf(att_str, sizeof(att_str), "[ATTACHMENT] %s", m->attachment_name);
+                } else {
+                    snprintf(att_str, sizeof(att_str), "[ATTACHMENT]");
+                }
+
+                if (strlen(m->content) > 0) {
+                    // Line 1: Header + [ATTACHMENT]
+                    printf("%s[%s]%s %s%s%s: %s%s%s\n",
+                           COLOR_DIM, m->timestamp, COLOR_RESET,
+                           author_color, author_name, COLOR_RESET,
+                           COLOR_YELLOW, att_str, COLOR_RESET);
+                    // Line 2: Message text on line below
+                    printf("  %s\n", m->content);
+                } else {
+                    // Only attachment
+                    printf("%s[%s]%s %s%s%s: %s%s%s\n",
+                           COLOR_DIM, m->timestamp, COLOR_RESET,
+                           author_color, author_name, COLOR_RESET,
+                           COLOR_YELLOW, att_str, COLOR_RESET);
+                }
+            } else {
+                printf("%s[%s]%s %s%s%s: %s\n",
+                       COLOR_DIM, m->timestamp, COLOR_RESET,
+                       author_color, author_name, COLOR_RESET,
+                       m->content);
+            }
         }
     }
 

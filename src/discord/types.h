@@ -31,6 +31,8 @@ typedef struct {
     char author_global_name[64];
     char content[2048];
     char timestamp[32]; // e.g. "14:32"
+    bool has_attachment;
+    char attachment_name[128];
 } DiscordMessage;
 
 typedef struct {
