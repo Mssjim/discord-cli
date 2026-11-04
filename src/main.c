@@ -80,6 +80,11 @@ int main(void) {
     // Main application event loop
     bool running = true;
     while (running) {
+        // Automatically check if console window dimensions changed
+        if (terminal_check_resized()) {
+            state->needs_redraw = true;
+        }
+
         if (state->needs_redraw) {
             ui_render(&ui, state);
         }

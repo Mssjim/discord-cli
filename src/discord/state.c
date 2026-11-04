@@ -145,17 +145,52 @@ void discord_state_parse_ready(DiscordState *state, const char *json_str, const 
 
                 if (cJSON_IsString(rid)) safe_strcpy(dm->recipient_id, sizeof(dm->recipient_id), rid->valuestring);
                 if (cJSON_IsString(rname)) safe_strcpy(dm->username, sizeof(dm->username), rname->valuestring);
-                if (cJSON_IsString(rgname) && rgname->valuestring) {
+                if (cJSON_IsString(rgname) && rgname->valuestring && strlen(rgname->valuestring) > 0) {
                     safe_strcpy(dm->display_name, sizeof(dm->display_name), rgname->valuestring);
                 } else {
                     safe_strcpy(dm->display_name, sizeof(dm->display_name), dm->username);
                 }
             } else {
-                safe_strcpy(dm->display_name, sizeof(dm->display_name), "Group DM");
-                safe_strcpy(dm->username, sizeof(dm->username), "group");
+                cJSON *cname = cJSON_GetObjectItemCaseSensitive(chan, "name");
+                if (cJSON_IsString(cname) && strlen(cname->valuestring) > 0) {
+                    safe_strcpy(dm->display_name, sizeof(dm->display_name), cname->valuestring);
+                    safe_strcpy(dm->username, sizeof(dm->username), "group");
+                } else {
+                    safe_strcpy(dm->display_name, sizeof(dm->display_name), "Group DM");
+                    safe_strcpy(dm->username, sizeof(dm->username), "group");
+                }
             }
 
             state->dm_count++;
+        }
+
+        // Check if any DMs are missing recipient details (lazy DMs in Discord v9 Gateway)
+        bool dms_incomplete = false;
+        for (int i = 0; i < state->dm_count; i++) {
+            if (strcmp(state->dms[i].username, "group") == 0 && strcmp(state->dms[i].display_name, "Group DM") == 0) {
+                dms_incomplete = true;
+                break;
+            }
+        }
+
+        if (dms_incomplete && token && strlen(token) > 0) {
+            DiscordDM *rest_dms = (DiscordDM *)malloc(sizeof(DiscordDM) * MAX_DMS);
+            int rest_dms_count = 0;
+            if (rest_dms && discord_api_fetch_dms(token, rest_dms, MAX_DMS, &rest_dms_count)) {
+                for (int i = 0; i < state->dm_count; i++) {
+                    for (int j = 0; j < rest_dms_count; j++) {
+                        if (strcmp(state->dms[i].id, rest_dms[j].id) == 0) {
+                            if (strcmp(rest_dms[j].username, "group") != 0 || strlen(rest_dms[j].recipient_id) > 0) {
+                                safe_strcpy(state->dms[i].recipient_id, sizeof(state->dms[i].recipient_id), rest_dms[j].recipient_id);
+                                safe_strcpy(state->dms[i].username, sizeof(state->dms[i].username), rest_dms[j].username);
+                                safe_strcpy(state->dms[i].display_name, sizeof(state->dms[i].display_name), rest_dms[j].display_name);
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+            if (rest_dms) free(rest_dms);
         }
 
         if (state->dm_count > 1) {

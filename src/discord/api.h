@@ -25,4 +25,9 @@ bool discord_api_ack_message(const char *token, const char *channel_id, const ch
  */
 bool discord_api_fetch_guilds(const char *token, DiscordGuild *out_guilds, int max_guilds, int *out_count);
 
+/**
+ * Fetches private channels / DMs from REST API (/users/@me/channels)
+ */
+bool discord_api_fetch_dms(const char *token, DiscordDM *out_dms, int max_dms, int *out_count);
+
 #endif // DISCORD_API_H

@@ -52,11 +52,9 @@ static void render_row(bool is_selected, const char *label, int unread_count) {
         count_len = (int)strlen(count_str);
     }
 
-    // Row format: "  Label" or "> Label" on the left, count on the far right
-    // Prefix is 2 chars: "> " or "  "
-    int prefix_len = 2;
+    int prefix_len = 2; // "> " or "  "
     int right_margin = 1;
-    int available_for_label = term_width - prefix_len - count_len - right_margin - 1;
+    int available_for_label = term_width - prefix_len - count_len - right_margin - 2;
     if (available_for_label < 10) available_for_label = 10;
 
     char truncated_label[256];
@@ -76,6 +74,22 @@ static void render_row(bool is_selected, const char *label, int unread_count) {
     }
 }
 
+static void render_scroll_hint(int current_idx, int total_items, int start_idx, int end_idx) {
+    int term_width = terminal_get_width();
+    if (total_items <= (end_idx - start_idx)) return;
+
+    char hint[64];
+    snprintf(hint, sizeof(hint), "-- [%d/%d] %s%s--",
+             current_idx + 1, total_items,
+             (start_idx > 0 ? "^ " : ""),
+             (end_idx < total_items ? "v " : ""));
+    int hint_len = (int)strlen(hint);
+    int left_pad = (term_width - hint_len) / 2;
+    if (left_pad < 0) left_pad = 0;
+
+    printf("%s%*s%s%s\n", COLOR_DIM, left_pad, "", hint, COLOR_RESET);
+}
+
 static void render_main_menu(UIState *ui, DiscordState *state) {
     char header_title[64];
     if (strlen(state->username) > 0) {
@@ -90,19 +104,38 @@ static void render_main_menu(UIState *ui, DiscordState *state) {
         ui->main_selected_idx = total_items > 0 ? total_items - 1 : 0;
     }
 
-    // Row 0: Direct Messages
-    render_row(ui->main_selected_idx == 0, "Direct Messages", state->dm_total_unread);
+    int term_height = terminal_get_height();
+    int visible_rows = term_height - 4; // 2 for header, 1 for scroll hint/bottom, 1 margin
+    if (visible_rows < 3) visible_rows = 3;
 
-    // Rows 1..N: Servers
-    for (int i = 0; i < state->guild_count; i++) {
-        char display_name[128];
-        if (strlen(state->guilds[i].name) > 0) {
-            snprintf(display_name, sizeof(display_name), "%s", state->guilds[i].name);
-        } else {
-            snprintf(display_name, sizeof(display_name), "Server %s", state->guilds[i].id);
-        }
-        render_row(ui->main_selected_idx == (i + 1), display_name, state->guilds[i].unread_count);
+    // Adjust scroll offset to keep selected item visible
+    if (ui->main_selected_idx < ui->scroll_offset) {
+        ui->scroll_offset = ui->main_selected_idx;
     }
+    if (ui->main_selected_idx >= ui->scroll_offset + visible_rows) {
+        ui->scroll_offset = ui->main_selected_idx - visible_rows + 1;
+    }
+    if (ui->scroll_offset < 0) ui->scroll_offset = 0;
+
+    int end_idx = ui->scroll_offset + visible_rows;
+    if (end_idx > total_items) end_idx = total_items;
+
+    for (int i = ui->scroll_offset; i < end_idx; i++) {
+        if (i == 0) {
+            render_row(ui->main_selected_idx == 0, "Direct Messages", state->dm_total_unread);
+        } else {
+            int g_idx = i - 1;
+            char display_name[128];
+            if (strlen(state->guilds[g_idx].name) > 0) {
+                snprintf(display_name, sizeof(display_name), "%s", state->guilds[g_idx].name);
+            } else {
+                snprintf(display_name, sizeof(display_name), "Server %s", state->guilds[g_idx].id);
+            }
+            render_row(ui->main_selected_idx == i, display_name, state->guilds[g_idx].unread_count);
+        }
+    }
+
+    render_scroll_hint(ui->main_selected_idx, total_items, ui->scroll_offset, end_idx);
 }
 
 static void render_dms_list(UIState *ui, DiscordState *state) {
@@ -117,7 +150,22 @@ static void render_dms_list(UIState *ui, DiscordState *state) {
         ui->dm_selected_idx = state->dm_count - 1;
     }
 
-    for (int i = 0; i < state->dm_count; i++) {
+    int term_height = terminal_get_height();
+    int visible_rows = term_height - 4;
+    if (visible_rows < 3) visible_rows = 3;
+
+    if (ui->dm_selected_idx < ui->scroll_offset) {
+        ui->scroll_offset = ui->dm_selected_idx;
+    }
+    if (ui->dm_selected_idx >= ui->scroll_offset + visible_rows) {
+        ui->scroll_offset = ui->dm_selected_idx - visible_rows + 1;
+    }
+    if (ui->scroll_offset < 0) ui->scroll_offset = 0;
+
+    int end_idx = ui->scroll_offset + visible_rows;
+    if (end_idx > state->dm_count) end_idx = state->dm_count;
+
+    for (int i = ui->scroll_offset; i < end_idx; i++) {
         char label[128];
         if (strcmp(state->dms[i].username, "group") == 0) {
             snprintf(label, sizeof(label), "%s", state->dms[i].display_name);
@@ -126,6 +174,8 @@ static void render_dms_list(UIState *ui, DiscordState *state) {
         }
         render_row(ui->dm_selected_idx == i, label, state->dms[i].unread_count);
     }
+
+    render_scroll_hint(ui->dm_selected_idx, state->dm_count, ui->scroll_offset, end_idx);
 }
 
 static void render_guild_channels(UIState *ui, DiscordState *state) {
@@ -148,11 +198,28 @@ static void render_guild_channels(UIState *ui, DiscordState *state) {
         ui->channel_selected_idx = guild->channel_count - 1;
     }
 
-    for (int i = 0; i < guild->channel_count; i++) {
+    int term_height = terminal_get_height();
+    int visible_rows = term_height - 4;
+    if (visible_rows < 3) visible_rows = 3;
+
+    if (ui->channel_selected_idx < ui->scroll_offset) {
+        ui->scroll_offset = ui->channel_selected_idx;
+    }
+    if (ui->channel_selected_idx >= ui->scroll_offset + visible_rows) {
+        ui->scroll_offset = ui->channel_selected_idx - visible_rows + 1;
+    }
+    if (ui->scroll_offset < 0) ui->scroll_offset = 0;
+
+    int end_idx = ui->scroll_offset + visible_rows;
+    if (end_idx > guild->channel_count) end_idx = guild->channel_count;
+
+    for (int i = ui->scroll_offset; i < end_idx; i++) {
         char label[128];
         snprintf(label, sizeof(label), "#%s", guild->channels[i].name);
         render_row(ui->channel_selected_idx == i, label, guild->channels[i].unread_count);
     }
+
+    render_scroll_hint(ui->channel_selected_idx, guild->channel_count, ui->scroll_offset, end_idx);
 }
 
 static void render_chat(UIState *ui, DiscordState *state) {
@@ -160,11 +227,22 @@ static void render_chat(UIState *ui, DiscordState *state) {
     snprintf(title, sizeof(title), "# %s", state->active_channel_name);
     render_header(title, "[Esc] Back to menu");
 
-    // Display messages
+    int term_height = terminal_get_height();
+    int term_width = terminal_get_width();
+
+    // Reserve lines: Header (2 lines) + Input line & separator (3 lines) = 5 lines
+    int max_chat_lines = term_height - 5;
+    if (max_chat_lines < 2) max_chat_lines = 2;
+
+    int start_msg = 0;
+    if (state->current_message_count > max_chat_lines) {
+        start_msg = state->current_message_count - max_chat_lines;
+    }
+
     if (state->current_message_count == 0) {
         printf("  %sNo recent messages or loading...%s\n\n", COLOR_DIM, COLOR_RESET);
     } else {
-        for (int i = 0; i < state->current_message_count; i++) {
+        for (int i = start_msg; i < state->current_message_count; i++) {
             DiscordMessage *m = &state->current_messages[i];
             bool is_self = (strlen(state->user_id) > 0 && strcmp(m->author_id, state->user_id) == 0);
 
@@ -178,7 +256,6 @@ static void render_chat(UIState *ui, DiscordState *state) {
     }
 
     // Input prompt at bottom
-    int term_width = terminal_get_width();
     printf("\n");
     for (int i = 0; i < term_width - 1; i++) putchar('-');
     printf("\nMessage: %s", ui->input_buffer);
@@ -228,6 +305,7 @@ static void open_channel(UIState *ui, DiscordState *state, const char *token, co
     ui->current_view = VIEW_CHAT;
     ui->input_len = 0;
     ui->input_buffer[0] = '\0';
+    ui->scroll_offset = 0;
 
     // Fetch initial history
     DiscordMessage fetched[MAX_CACHED_MESSAGES];
@@ -263,12 +341,14 @@ bool ui_handle_input(UIState *ui, DiscordState *state, const char *token, const 
                 if (ui->main_selected_idx == 0) {
                     ui->current_view = VIEW_DMS_LIST;
                     ui->dm_selected_idx = 0;
+                    ui->scroll_offset = 0;
                     state->needs_redraw = true;
                 } else {
                     int guild_idx = ui->main_selected_idx - 1;
                     if (guild_idx >= 0 && guild_idx < state->guild_count) {
                         ui->guild_selected_idx = guild_idx;
                         ui->channel_selected_idx = 0;
+                        ui->scroll_offset = 0;
                         ui->current_view = VIEW_GUILD_CHANNELS;
                         state->needs_redraw = true;
                     }
@@ -280,6 +360,7 @@ bool ui_handle_input(UIState *ui, DiscordState *state, const char *token, const 
         case VIEW_DMS_LIST: {
             if (event->type == KEY_ESC || (event->type == KEY_CHAR && (event->ch == 'b' || event->ch == 'B'))) {
                 ui->current_view = VIEW_MAIN_MENU;
+                ui->scroll_offset = 0;
                 state->needs_redraw = true;
             } else if (event->type == KEY_UP) {
                 if (ui->dm_selected_idx > 0) ui->dm_selected_idx--;
@@ -301,6 +382,7 @@ bool ui_handle_input(UIState *ui, DiscordState *state, const char *token, const 
         case VIEW_GUILD_CHANNELS: {
             if (event->type == KEY_ESC || (event->type == KEY_CHAR && (event->ch == 'b' || event->ch == 'B'))) {
                 ui->current_view = VIEW_MAIN_MENU;
+                ui->scroll_offset = 0;
                 state->needs_redraw = true;
             } else if (event->type == KEY_UP) {
                 if (ui->channel_selected_idx > 0) ui->channel_selected_idx--;
@@ -326,6 +408,7 @@ bool ui_handle_input(UIState *ui, DiscordState *state, const char *token, const 
                 discord_state_clear_active_channel(state);
                 ui->input_len = 0;
                 ui->input_buffer[0] = '\0';
+                ui->scroll_offset = 0;
                 if (ui->main_selected_idx == 0) {
                     ui->current_view = VIEW_DMS_LIST;
                 } else {

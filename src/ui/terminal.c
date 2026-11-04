@@ -14,6 +14,8 @@ static DWORD g_orig_in_mode = 0;
 static UINT g_orig_cp = 0;
 static UINT g_orig_output_cp = 0;
 static bool g_initialized = false;
+static int g_last_width = 80;
+static int g_last_height = 25;
 
 void terminal_init(void) {
     if (g_initialized) return;
@@ -35,6 +37,8 @@ void terminal_init(void) {
         GetConsoleMode(hIn, &g_orig_in_mode);
     }
 
+    g_last_width = terminal_get_width();
+    g_last_height = terminal_get_height();
     g_initialized = true;
 }
 
@@ -79,14 +83,57 @@ void terminal_set_cursor(int row, int col) {
     fflush(stdout);
 }
 
+static HANDLE get_console_output_handle(void) {
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (hOut != INVALID_HANDLE_VALUE) {
+        DWORD mode;
+        if (GetConsoleMode(hOut, &mode)) {
+            return hOut;
+        }
+    }
+    // Fallback directly to the active console screen buffer
+    return CreateFileW(L"CONOUT$", GENERIC_READ | GENERIC_WRITE,
+                       FILE_SHARE_READ | FILE_SHARE_WRITE,
+                       NULL, OPEN_EXISTING, 0, NULL);
+}
+
 int terminal_get_width(void) {
     CONSOLE_SCREEN_BUFFER_INFO csbi;
-    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    HANDLE hOut = get_console_output_handle();
     if (hOut != INVALID_HANDLE_VALUE && GetConsoleScreenBufferInfo(hOut, &csbi)) {
         int w = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+        if (hOut != GetStdHandle(STD_OUTPUT_HANDLE)) CloseHandle(hOut);
         if (w > 20) return w;
     }
+    if (hOut != INVALID_HANDLE_VALUE && hOut != GetStdHandle(STD_OUTPUT_HANDLE)) {
+        CloseHandle(hOut);
+    }
     return 80;
+}
+
+int terminal_get_height(void) {
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    HANDLE hOut = get_console_output_handle();
+    if (hOut != INVALID_HANDLE_VALUE && GetConsoleScreenBufferInfo(hOut, &csbi)) {
+        int h = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
+        if (hOut != GetStdHandle(STD_OUTPUT_HANDLE)) CloseHandle(hOut);
+        if (h > 5) return h;
+    }
+    if (hOut != INVALID_HANDLE_VALUE && hOut != GetStdHandle(STD_OUTPUT_HANDLE)) {
+        CloseHandle(hOut);
+    }
+    return 25;
+}
+
+bool terminal_check_resized(void) {
+    int cur_w = terminal_get_width();
+    int cur_h = terminal_get_height();
+    if (cur_w != g_last_width || cur_h != g_last_height) {
+        g_last_width = cur_w;
+        g_last_height = cur_h;
+        return true;
+    }
+    return false;
 }
 
 bool terminal_read_key(KeyEvent *event, int timeout_ms) {
@@ -148,5 +195,7 @@ void terminal_hide_cursor(void) { printf("\033[?25l"); fflush(stdout); }
 void terminal_show_cursor(void) { printf("\033[?25h"); fflush(stdout); }
 void terminal_set_cursor(int row, int col) { printf("\033[%d;%dH", row, col); fflush(stdout); }
 int terminal_get_width(void) { return 80; }
+int terminal_get_height(void) { return 25; }
+bool terminal_check_resized(void) { return false; }
 bool terminal_read_key(KeyEvent *event, int timeout_ms) { (void)event; (void)timeout_ms; return false; }
 #endif

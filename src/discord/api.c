@@ -314,3 +314,76 @@ bool discord_api_fetch_guilds(const char *token, DiscordGuild *out_guilds, int m
     cJSON_Delete(root);
     return true;
 }
+
+bool discord_api_fetch_dms(const char *token, DiscordDM *out_dms, int max_dms, int *out_count) {
+    if (!token || !out_dms || !out_count) return false;
+    *out_count = 0;
+
+    char *response = NULL;
+    int status = 0;
+    if (!http_request_winhttp("GET", "/api/v9/users/@me/channels", token, NULL, &response, &status) || !response) {
+        if (response) free(response);
+        return false;
+    }
+
+    if (status < 200 || status >= 300) {
+        free(response);
+        return false;
+    }
+
+    cJSON *root = cJSON_Parse(response);
+    free(response);
+    if (!root || !cJSON_IsArray(root)) {
+        if (root) cJSON_Delete(root);
+        return false;
+    }
+
+    int count = cJSON_GetArraySize(root);
+    if (count > max_dms) count = max_dms;
+
+    int out_idx = 0;
+    for (int i = 0; i < count; i++) {
+        cJSON *chan = cJSON_GetArrayItem(root, i);
+        if (!chan) continue;
+
+        cJSON *cid = cJSON_GetObjectItemCaseSensitive(chan, "id");
+        cJSON *last_msg = cJSON_GetObjectItemCaseSensitive(chan, "last_message_id");
+        cJSON *recipients = cJSON_GetObjectItemCaseSensitive(chan, "recipients");
+        cJSON *cname = cJSON_GetObjectItemCaseSensitive(chan, "name");
+
+        if (!cJSON_IsString(cid)) continue;
+
+        DiscordDM *dm = &out_dms[out_idx++];
+        memset(dm, 0, sizeof(DiscordDM));
+        strncpy_s(dm->id, sizeof(dm->id), cid->valuestring, _TRUNCATE);
+
+        if (cJSON_IsString(last_msg)) {
+            strncpy_s(dm->last_message_id, sizeof(dm->last_message_id), last_msg->valuestring, _TRUNCATE);
+        }
+
+        if (cJSON_IsArray(recipients) && cJSON_GetArraySize(recipients) > 0) {
+            cJSON *rec = cJSON_GetArrayItem(recipients, 0);
+            cJSON *rid = cJSON_GetObjectItemCaseSensitive(rec, "id");
+            cJSON *rname = cJSON_GetObjectItemCaseSensitive(rec, "username");
+            cJSON *rgname = cJSON_GetObjectItemCaseSensitive(rec, "global_name");
+
+            if (cJSON_IsString(rid)) strncpy_s(dm->recipient_id, sizeof(dm->recipient_id), rid->valuestring, _TRUNCATE);
+            if (cJSON_IsString(rname)) strncpy_s(dm->username, sizeof(dm->username), rname->valuestring, _TRUNCATE);
+            if (cJSON_IsString(rgname) && rgname->valuestring && strlen(rgname->valuestring) > 0) {
+                strncpy_s(dm->display_name, sizeof(dm->display_name), rgname->valuestring, _TRUNCATE);
+            } else {
+                strncpy_s(dm->display_name, sizeof(dm->display_name), dm->username, _TRUNCATE);
+            }
+        } else if (cJSON_IsString(cname) && strlen(cname->valuestring) > 0) {
+            strncpy_s(dm->display_name, sizeof(dm->display_name), cname->valuestring, _TRUNCATE);
+            strncpy_s(dm->username, sizeof(dm->username), "group", _TRUNCATE);
+        } else {
+            strncpy_s(dm->display_name, sizeof(dm->display_name), "Group DM", _TRUNCATE);
+            strncpy_s(dm->username, sizeof(dm->username), "group", _TRUNCATE);
+        }
+    }
+
+    *out_count = out_idx;
+    cJSON_Delete(root);
+    return true;
+}
