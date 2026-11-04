@@ -18,20 +18,26 @@ int main(void) {
         return 1;
     }
 
-    DiscordState state;
-    discord_state_init(&state);
+    DiscordState *state = (DiscordState *)malloc(sizeof(DiscordState));
+    if (!state) {
+        fprintf(stderr, "Failed to allocate memory for DiscordState.\n");
+        terminal_cleanup();
+        return 1;
+    }
+    discord_state_init(state);
 
     UIState ui;
     ui_init(&ui);
 
     // Initial loading screen
-    state.needs_redraw = true;
-    ui_render(&ui, &state);
+    state->needs_redraw = true;
+    ui_render(&ui, state);
 
     // Start WebSocket Gateway
-    if (!discord_gateway_start(token, &state)) {
+    if (!discord_gateway_start(token, state)) {
         fprintf(stderr, "Failed to connect to Discord Gateway.\n");
-        discord_state_destroy(&state);
+        discord_state_destroy(state);
+        free(state);
         terminal_cleanup();
         return 1;
     }
@@ -39,15 +45,15 @@ int main(void) {
     // Main application event loop
     bool running = true;
     while (running) {
-        if (state.needs_redraw) {
-            ui_render(&ui, &state);
+        if (state->needs_redraw) {
+            ui_render(&ui, state);
         }
 
         KeyEvent ev;
         if (terminal_read_key(&ev, 50)) {
-            running = ui_handle_input(&ui, &state, token, &ev);
-            if (state.needs_redraw) {
-                ui_render(&ui, &state);
+            running = ui_handle_input(&ui, state, token, &ev);
+            if (state->needs_redraw) {
+                ui_render(&ui, state);
             }
         }
     }
@@ -56,9 +62,9 @@ int main(void) {
     terminal_clear();
     printf("Exiting Discord CLI...\n");
     discord_gateway_stop();
-    discord_state_destroy(&state);
+    discord_state_destroy(state);
+    free(state);
     terminal_cleanup();
 
     return 0;
 }
-
