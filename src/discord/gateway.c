@@ -156,7 +156,6 @@ static void handle_gateway_message(const char *msg, DiscordState *state) {
 
         case 7: // RECONNECT
         case 9: // INVALID_SESSION
-            // In a simple CLI, we can signal reconnect
             break;
 
         default:
@@ -176,10 +175,14 @@ static DWORD WINAPI gateway_thread_proc(LPVOID lpParam) {
         WINHTTP_NO_PROXY_BYPASS,
         0
     );
-    if (!hSession) return 1;
+    if (!hSession) {
+        fprintf(stderr, "\n[Gateway Error] WinHttpOpen failed: %lu\n", GetLastError());
+        return 1;
+    }
 
     HINTERNET hConnect = WinHttpConnect(hSession, L"gateway.discord.gg", INTERNET_DEFAULT_HTTPS_PORT, 0);
     if (!hConnect) {
+        fprintf(stderr, "\n[Gateway Error] WinHttpConnect failed: %lu\n", GetLastError());
         WinHttpCloseHandle(hSession);
         return 1;
     }
@@ -194,6 +197,7 @@ static DWORD WINAPI gateway_thread_proc(LPVOID lpParam) {
         WINHTTP_FLAG_SECURE
     );
     if (!hRequest) {
+        fprintf(stderr, "\n[Gateway Error] WinHttpOpenRequest failed: %lu\n", GetLastError());
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
         return 1;
@@ -201,6 +205,7 @@ static DWORD WINAPI gateway_thread_proc(LPVOID lpParam) {
 
     BOOL opt = WinHttpSetOption(hRequest, WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET, NULL, 0);
     if (!opt) {
+        fprintf(stderr, "\n[Gateway Error] WinHttpSetOption WebSocket upgrade failed: %lu\n", GetLastError());
         WinHttpCloseHandle(hRequest);
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
@@ -209,6 +214,7 @@ static DWORD WINAPI gateway_thread_proc(LPVOID lpParam) {
 
     if (!WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0, NULL, 0, 0, 0) ||
         !WinHttpReceiveResponse(hRequest, NULL)) {
+        fprintf(stderr, "\n[Gateway Error] WinHttpSendRequest/ReceiveResponse failed: %lu\n", GetLastError());
         WinHttpCloseHandle(hRequest);
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
@@ -219,6 +225,7 @@ static DWORD WINAPI gateway_thread_proc(LPVOID lpParam) {
     WinHttpCloseHandle(hRequest);
 
     if (!g_hWebSocket) {
+        fprintf(stderr, "\n[Gateway Error] WinHttpWebSocketCompleteUpgrade failed: %lu\n", GetLastError());
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
         return 1;
@@ -288,7 +295,8 @@ bool discord_gateway_start(const char *token, DiscordState *state) {
     g_running = true;
 
 #ifdef _WIN32
-    g_gateway_thread = CreateThread(NULL, 0, gateway_thread_proc, NULL, 0, NULL);
+    // Create thread with an explicit 8MB stack size to safely handle large JSON trees
+    g_gateway_thread = CreateThread(NULL, 8 * 1024 * 1024, gateway_thread_proc, NULL, 0, NULL);
     return g_gateway_thread != NULL;
 #else
     return false;

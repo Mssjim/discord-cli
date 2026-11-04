@@ -1,6 +1,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 #include "config.h"
 #include "discord/types.h"
 #include "discord/state.h"
@@ -8,7 +11,39 @@
 #include "ui/terminal.h"
 #include "ui/views.h"
 
+#ifdef _WIN32
+static LONG WINAPI CrashExceptionHandler(EXCEPTION_POINTERS *pExceptionInfo) {
+    terminal_show_cursor();
+    DWORD code = pExceptionInfo ? pExceptionInfo->ExceptionRecord->ExceptionCode : 0;
+    void *addr = pExceptionInfo ? pExceptionInfo->ExceptionRecord->ExceptionAddress : NULL;
+
+    fprintf(stderr, "\n\n===================================================\n");
+    fprintf(stderr, "                 FATAL ERROR / CRASH               \n");
+    fprintf(stderr, "===================================================\n");
+    fprintf(stderr, "Exception Code   : 0x%08lX\n", code);
+    fprintf(stderr, "Faulting Address : %p\n", addr);
+
+    if (code == EXCEPTION_ACCESS_VIOLATION) {
+        fprintf(stderr, "Type             : Access Violation (Segmentation Fault)\n");
+    } else if (code == EXCEPTION_STACK_OVERFLOW) {
+        fprintf(stderr, "Type             : Stack Overflow\n");
+    }
+
+    fprintf(stderr, "\nPress Enter to exit...\n");
+    fflush(stderr);
+
+    char dummy[16];
+    fgets(dummy, sizeof(dummy), stdin);
+
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+#endif
+
 int main(void) {
+#ifdef _WIN32
+    SetUnhandledExceptionFilter(CrashExceptionHandler);
+#endif
+
     terminal_init();
 
     char token[MAX_TOKEN_LEN];

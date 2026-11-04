@@ -40,7 +40,10 @@ void discord_state_parse_ready(DiscordState *state, const char *json_str) {
     if (!state || !json_str) return;
 
     cJSON *root = cJSON_Parse(json_str);
-    if (!root) return;
+    if (!root) {
+        fprintf(stderr, "[Gateway] Warning: Failed to parse READY JSON payload\n");
+        return;
+    }
 
     cJSON *d = cJSON_GetObjectItemCaseSensitive(root, "d");
     if (!d) {
@@ -67,7 +70,6 @@ void discord_state_parse_ready(DiscordState *state, const char *json_str) {
     }
 
     // 2. Read States (Badge and mention counts)
-    // Structure can be { "read_state": { "entries": [...] } } or { "read_state": [...] }
     cJSON *read_state = cJSON_GetObjectItemCaseSensitive(d, "read_state");
     cJSON *rs_entries = NULL;
     if (cJSON_IsObject(read_state)) {
@@ -76,7 +78,6 @@ void discord_state_parse_ready(DiscordState *state, const char *json_str) {
         rs_entries = read_state;
     }
 
-    // Temporary helper hash / array for read states
     typedef struct {
         char channel_id[36];
         int count;
@@ -103,8 +104,6 @@ void discord_state_parse_ready(DiscordState *state, const char *json_str) {
         }
     }
 
-
-
     // 3. Private Channels (DMs)
     state->dm_count = 0;
     state->dm_total_unread = 0;
@@ -115,7 +114,6 @@ void discord_state_parse_ready(DiscordState *state, const char *json_str) {
             if (state->dm_count >= MAX_DMS) break;
 
             cJSON *cid = cJSON_GetObjectItemCaseSensitive(chan, "id");
-            cJSON *type = cJSON_GetObjectItemCaseSensitive(chan, "type");
             cJSON *last_msg = cJSON_GetObjectItemCaseSensitive(chan, "last_message_id");
             cJSON *recipients = cJSON_GetObjectItemCaseSensitive(chan, "recipients");
 
@@ -166,103 +164,105 @@ void discord_state_parse_ready(DiscordState *state, const char *json_str) {
         }
     }
 
-    // 4. Raw Guilds
-    DiscordGuild raw_guilds[MAX_GUILDS];
+    // 4. Raw Guilds (Allocated on heap to prevent stack overflow on thread stack)
+    DiscordGuild *raw_guilds = (DiscordGuild *)malloc(sizeof(DiscordGuild) * MAX_GUILDS);
     int raw_guild_count = 0;
 
-    cJSON *guilds = cJSON_GetObjectItemCaseSensitive(d, "guilds");
-    if (cJSON_IsArray(guilds)) {
-        cJSON *g = NULL;
-        cJSON_ArrayForEach(g, guilds) {
-            if (raw_guild_count >= MAX_GUILDS) break;
+    if (raw_guilds) {
+        cJSON *guilds = cJSON_GetObjectItemCaseSensitive(d, "guilds");
+        if (cJSON_IsArray(guilds)) {
+            cJSON *g = NULL;
+            cJSON_ArrayForEach(g, guilds) {
+                if (raw_guild_count >= MAX_GUILDS) break;
 
-            cJSON *gid = cJSON_GetObjectItemCaseSensitive(g, "id");
-            cJSON *gname = cJSON_GetObjectItemCaseSensitive(g, "name");
-            cJSON *channels = cJSON_GetObjectItemCaseSensitive(g, "channels");
+                cJSON *gid = cJSON_GetObjectItemCaseSensitive(g, "id");
+                cJSON *gname = cJSON_GetObjectItemCaseSensitive(g, "name");
+                cJSON *channels = cJSON_GetObjectItemCaseSensitive(g, "channels");
 
-            if (!cJSON_IsString(gid)) continue;
+                if (!cJSON_IsString(gid)) continue;
 
-            DiscordGuild *guild = &raw_guilds[raw_guild_count];
-            memset(guild, 0, sizeof(DiscordGuild));
-            safe_strcpy(guild->id, sizeof(guild->id), gid->valuestring);
-            if (cJSON_IsString(gname)) safe_strcpy(guild->name, sizeof(guild->name), gname->valuestring);
+                DiscordGuild *guild = &raw_guilds[raw_guild_count];
+                memset(guild, 0, sizeof(DiscordGuild));
+                safe_strcpy(guild->id, sizeof(guild->id), gid->valuestring);
+                if (cJSON_IsString(gname)) safe_strcpy(guild->name, sizeof(guild->name), gname->valuestring);
 
-            guild->channel_count = 0;
-            guild->unread_count = 0;
+                guild->channel_count = 0;
+                guild->unread_count = 0;
 
-            if (cJSON_IsArray(channels)) {
-                cJSON *ch = NULL;
-                cJSON_ArrayForEach(ch, channels) {
-                    if (guild->channel_count >= MAX_CHANNELS_PER_GUILD) break;
+                if (cJSON_IsArray(channels)) {
+                    cJSON *ch = NULL;
+                    cJSON_ArrayForEach(ch, channels) {
+                        if (guild->channel_count >= MAX_CHANNELS_PER_GUILD) break;
 
-                    cJSON *cid = cJSON_GetObjectItemCaseSensitive(ch, "id");
-                    cJSON *cname = cJSON_GetObjectItemCaseSensitive(ch, "name");
-                    cJSON *ctype = cJSON_GetObjectItemCaseSensitive(ch, "type");
-                    cJSON *cpos = cJSON_GetObjectItemCaseSensitive(ch, "position");
-                    cJSON *clast = cJSON_GetObjectItemCaseSensitive(ch, "last_message_id");
+                        cJSON *cid = cJSON_GetObjectItemCaseSensitive(ch, "id");
+                        cJSON *cname = cJSON_GetObjectItemCaseSensitive(ch, "name");
+                        cJSON *ctype = cJSON_GetObjectItemCaseSensitive(ch, "type");
+                        cJSON *cpos = cJSON_GetObjectItemCaseSensitive(ch, "position");
+                        cJSON *clast = cJSON_GetObjectItemCaseSensitive(ch, "last_message_id");
 
-                    if (!cJSON_IsString(cid)) continue;
+                        if (!cJSON_IsString(cid)) continue;
 
-                    // Filter text-based channels: 0 (GUILD_TEXT), 5 (GUILD_ANNOUNCEMENT)
-                    int type_val = cJSON_IsNumber(ctype) ? ctype->valueint : 0;
-                    if (type_val != 0 && type_val != 5) continue;
+                        int type_val = cJSON_IsNumber(ctype) ? ctype->valueint : 0;
+                        if (type_val != 0 && type_val != 5) continue;
 
-                    DiscordChannel *chan_obj = &guild->channels[guild->channel_count];
-                    memset(chan_obj, 0, sizeof(DiscordChannel));
-                    safe_strcpy(chan_obj->id, sizeof(chan_obj->id), cid->valuestring);
-                    if (cJSON_IsString(cname)) safe_strcpy(chan_obj->name, sizeof(chan_obj->name), cname->valuestring);
-                    chan_obj->type = type_val;
-                    chan_obj->position = cJSON_IsNumber(cpos) ? cpos->valueint : guild->channel_count;
-                    if (cJSON_IsString(clast)) safe_strcpy(chan_obj->last_message_id, sizeof(chan_obj->last_message_id), clast->valuestring);
+                        DiscordChannel *chan_obj = &guild->channels[guild->channel_count];
+                        memset(chan_obj, 0, sizeof(DiscordChannel));
+                        safe_strcpy(chan_obj->id, sizeof(chan_obj->id), cid->valuestring);
+                        if (cJSON_IsString(cname)) safe_strcpy(chan_obj->name, sizeof(chan_obj->name), cname->valuestring);
+                        chan_obj->type = type_val;
+                        chan_obj->position = cJSON_IsNumber(cpos) ? cpos->valueint : guild->channel_count;
+                        if (cJSON_IsString(clast)) safe_strcpy(chan_obj->last_message_id, sizeof(chan_obj->last_message_id), clast->valuestring);
 
-                    // Unread count
-                    for (int r = 0; r < temp_rc_count; r++) {
-                        if (strcmp(temp_rc[r].channel_id, chan_obj->id) == 0) {
-                            chan_obj->unread_count = temp_rc[r].count;
-                            break;
+                        for (int r = 0; r < temp_rc_count; r++) {
+                            if (strcmp(temp_rc[r].channel_id, chan_obj->id) == 0) {
+                                chan_obj->unread_count = temp_rc[r].count;
+                                break;
+                            }
                         }
+                        guild->unread_count += chan_obj->unread_count;
+                        guild->channel_count++;
                     }
-                    guild->unread_count += chan_obj->unread_count;
-                    guild->channel_count++;
                 }
-            }
 
-            raw_guild_count++;
-        }
-    }
-
-    // 5. User Guild Positions (Original server order)
-    cJSON *user_settings = cJSON_GetObjectItemCaseSensitive(d, "user_settings");
-    cJSON *guild_positions = NULL;
-    if (cJSON_IsObject(user_settings)) {
-        guild_positions = cJSON_GetObjectItemCaseSensitive(user_settings, "guild_positions");
-    }
-
-    state->guild_count = 0;
-    bool used_guild[MAX_GUILDS] = {0};
-
-    if (cJSON_IsArray(guild_positions)) {
-        cJSON *pos_id = NULL;
-        cJSON_ArrayForEach(pos_id, guild_positions) {
-            if (state->guild_count >= MAX_GUILDS) break;
-            if (!cJSON_IsString(pos_id)) continue;
-
-            for (int i = 0; i < raw_guild_count; i++) {
-                if (!used_guild[i] && strcmp(raw_guilds[i].id, pos_id->valuestring) == 0) {
-                    state->guilds[state->guild_count++] = raw_guilds[i];
-                    used_guild[i] = true;
-                    break;
-                }
+                raw_guild_count++;
             }
         }
-    }
 
-    // Add any remaining guilds that weren't in guild_positions
-    for (int i = 0; i < raw_guild_count; i++) {
-        if (!used_guild[i] && state->guild_count < MAX_GUILDS) {
-            state->guilds[state->guild_count++] = raw_guilds[i];
-            used_guild[i] = true;
+        // 5. User Guild Positions (Original server order)
+        cJSON *user_settings = cJSON_GetObjectItemCaseSensitive(d, "user_settings");
+        cJSON *guild_positions = NULL;
+        if (cJSON_IsObject(user_settings)) {
+            guild_positions = cJSON_GetObjectItemCaseSensitive(user_settings, "guild_positions");
         }
+
+        state->guild_count = 0;
+        bool used_guild[MAX_GUILDS] = {0};
+
+        if (cJSON_IsArray(guild_positions)) {
+            cJSON *pos_id = NULL;
+            cJSON_ArrayForEach(pos_id, guild_positions) {
+                if (state->guild_count >= MAX_GUILDS) break;
+                if (!cJSON_IsString(pos_id)) continue;
+
+                for (int i = 0; i < raw_guild_count; i++) {
+                    if (!used_guild[i] && strcmp(raw_guilds[i].id, pos_id->valuestring) == 0) {
+                        state->guilds[state->guild_count++] = raw_guilds[i];
+                        used_guild[i] = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Add any remaining guilds that weren't in guild_positions
+        for (int i = 0; i < raw_guild_count; i++) {
+            if (!used_guild[i] && state->guild_count < MAX_GUILDS) {
+                state->guilds[state->guild_count++] = raw_guilds[i];
+                used_guild[i] = true;
+            }
+        }
+
+        free(raw_guilds);
     }
 
     state->is_ready = true;
@@ -334,7 +334,6 @@ void discord_state_handle_message_create(DiscordState *state, const char *json_s
         state->needs_redraw = true;
     } else {
         // Increment unread count for the channel / DM
-        // Check DMs
         bool found_dm = false;
         for (int i = 0; i < state->dm_count; i++) {
             if (strcmp(state->dms[i].id, cid->valuestring) == 0) {
@@ -387,7 +386,6 @@ void discord_state_handle_message_ack(DiscordState *state, const char *json_str)
 
     DISCORD_MUTEX_LOCK(&state->lock);
 
-    // Reset unread for this channel or DM
     for (int i = 0; i < state->dm_count; i++) {
         if (strcmp(state->dms[i].id, cid->valuestring) == 0) {
             state->dm_total_unread -= state->dms[i].unread_count;
@@ -421,7 +419,6 @@ void discord_state_set_active_channel(DiscordState *state, const char *channel_i
     safe_strcpy(state->active_channel_name, sizeof(state->active_channel_name), channel_name);
     state->current_message_count = 0;
 
-    // Reset unread count for this active channel
     for (int i = 0; i < state->dm_count; i++) {
         if (strcmp(state->dms[i].id, channel_id) == 0) {
             state->dm_total_unread -= state->dms[i].unread_count;
@@ -473,7 +470,6 @@ void discord_state_add_message(DiscordState *state, const DiscordMessage *msg) {
     if (state->current_message_count < MAX_CACHED_MESSAGES) {
         state->current_messages[state->current_message_count++] = *msg;
     } else {
-        // Shift left and append
         for (int i = 0; i < MAX_CACHED_MESSAGES - 1; i++) {
             state->current_messages[i] = state->current_messages[i + 1];
         }
