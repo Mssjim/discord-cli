@@ -4,6 +4,9 @@
 #include <string.h>
 #include <conio.h>
 #include <ctype.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 static void trim_whitespace(char *str) {
     if (!str) return;
@@ -62,6 +65,30 @@ static bool save_token_to_env_file(const char *filepath, const char *token) {
     return true;
 }
 
+#ifdef _WIN32
+static void paste_from_clipboard(char *buffer, size_t *idx, size_t max_len) {
+    if (!OpenClipboard(NULL)) return;
+
+    HANDLE hData = GetClipboardData(CF_TEXT);
+    if (hData) {
+        char *clip_text = (char *)GlobalLock(hData);
+        if (clip_text) {
+            for (size_t i = 0; clip_text[i] != '\0'; i++) {
+                char c = clip_text[i];
+                if (c == '\r' || c == '\n') break;
+                if ((unsigned char)c >= 32 && *idx < max_len - 1) {
+                    buffer[(*idx)++] = c;
+                    putchar('*');
+                }
+            }
+            fflush(stdout);
+            GlobalUnlock(hData);
+        }
+    }
+    CloseClipboard();
+}
+#endif
+
 static void read_masked_input(char *buffer, size_t max_len) {
     size_t idx = 0;
     while (1) {
@@ -74,13 +101,32 @@ static void read_masked_input(char *buffer, size_t max_len) {
             if (idx > 0) {
                 idx--;
                 printf("\b \b");
+                fflush(stdout);
             }
         } else if (ch == 3) { // Ctrl+C
             printf("\nCancelled.\n");
             exit(1);
+        } else if (ch == 22) { // Ctrl+V
+#ifdef _WIN32
+            paste_from_clipboard(buffer, &idx, max_len);
+#endif
+        } else if (ch == 0 || ch == 224) { // Extended key
+            int ext = _getch();
+#ifdef _WIN32
+            // 82 = Insert key. Check if Shift is held down (Shift + Insert)
+            if (ext == 82) {
+                SHORT shiftState = GetKeyState(VK_SHIFT);
+                if (shiftState & 0x8000) {
+                    paste_from_clipboard(buffer, &idx, max_len);
+                }
+            }
+#else
+            (void)ext;
+#endif
         } else if (ch >= 32 && ch <= 126 && idx < max_len - 1) {
             buffer[idx++] = (char)ch;
             printf("*");
+            fflush(stdout);
         }
     }
     trim_whitespace(buffer);
@@ -98,7 +144,7 @@ bool config_get_token(char *token_out, size_t max_len) {
     printf("               DISCORD CLI - SETUP                 \n");
     printf("===================================================\n");
     printf("No Discord token found in '%s'.\n", env_filename);
-    printf("Paste your Discord token (input will be masked):\n> ");
+    printf("Paste your Discord token (Ctrl+V / Shift+Insert supported):\n> ");
     fflush(stdout);
 
     char input_token[MAX_TOKEN_LEN];
