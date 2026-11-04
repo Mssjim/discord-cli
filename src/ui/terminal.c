@@ -79,6 +79,16 @@ void terminal_set_cursor(int row, int col) {
     fflush(stdout);
 }
 
+int terminal_get_width(void) {
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (hOut != INVALID_HANDLE_VALUE && GetConsoleScreenBufferInfo(hOut, &csbi)) {
+        int w = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+        if (w > 20) return w;
+    }
+    return 80;
+}
+
 bool terminal_read_key(KeyEvent *event, int timeout_ms) {
     if (!event) return false;
     event->type = KEY_NONE;
@@ -137,6 +147,6 @@ void terminal_clear(void) { printf("\033[2J\033[H"); fflush(stdout); }
 void terminal_hide_cursor(void) { printf("\033[?25l"); fflush(stdout); }
 void terminal_show_cursor(void) { printf("\033[?25h"); fflush(stdout); }
 void terminal_set_cursor(int row, int col) { printf("\033[%d;%dH", row, col); fflush(stdout); }
+int terminal_get_width(void) { return 80; }
 bool terminal_read_key(KeyEvent *event, int timeout_ms) { (void)event; (void)timeout_ms; return false; }
 #endif
-

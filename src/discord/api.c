@@ -137,7 +137,7 @@ static bool http_request_winhttp(
 }
 
 #else
-// Linux / POSIX fallback stub (can be extended with libcurl)
+// Linux / POSIX fallback stub
 static bool http_request_winhttp(
     const char *method,
     const char *path,
@@ -181,7 +181,6 @@ bool discord_api_fetch_messages(const char *token, const char *channel_id, int l
     int count = cJSON_GetArraySize(root);
     if (count > MAX_CACHED_MESSAGES) count = MAX_CACHED_MESSAGES;
 
-    // Discord returns messages newest first. We reverse them to show oldest first.
     int out_idx = 0;
     for (int i = count - 1; i >= 0; i--) {
         cJSON *item = cJSON_GetArrayItem(root, i);
@@ -267,3 +266,51 @@ bool discord_api_ack_message(const char *token, const char *channel_id, const ch
     return ok && (status >= 200 && status < 300);
 }
 
+bool discord_api_fetch_guilds(const char *token, DiscordGuild *out_guilds, int max_guilds, int *out_count) {
+    if (!token || !out_guilds || !out_count) return false;
+    *out_count = 0;
+
+    char *response = NULL;
+    int status = 0;
+    if (!http_request_winhttp("GET", "/api/v9/users/@me/guilds", token, NULL, &response, &status) || !response) {
+        if (response) free(response);
+        return false;
+    }
+
+    if (status < 200 || status >= 300) {
+        free(response);
+        return false;
+    }
+
+    cJSON *root = cJSON_Parse(response);
+    free(response);
+    if (!root || !cJSON_IsArray(root)) {
+        if (root) cJSON_Delete(root);
+        return false;
+    }
+
+    int count = cJSON_GetArraySize(root);
+    if (count > max_guilds) count = max_guilds;
+
+    int out_idx = 0;
+    for (int i = 0; i < count; i++) {
+        cJSON *item = cJSON_GetArrayItem(root, i);
+        if (!item) continue;
+
+        cJSON *gid = cJSON_GetObjectItemCaseSensitive(item, "id");
+        cJSON *gname = cJSON_GetObjectItemCaseSensitive(item, "name");
+
+        if (!cJSON_IsString(gid)) continue;
+
+        DiscordGuild *g = &out_guilds[out_idx++];
+        memset(g, 0, sizeof(DiscordGuild));
+        strncpy_s(g->id, sizeof(g->id), gid->valuestring, _TRUNCATE);
+        if (cJSON_IsString(gname)) {
+            strncpy_s(g->name, sizeof(g->name), gname->valuestring, _TRUNCATE);
+        }
+    }
+
+    *out_count = out_idx;
+    cJSON_Delete(root);
+    return true;
+}

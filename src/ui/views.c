@@ -1,6 +1,7 @@
 #include "views.h"
 #include "../discord/api.h"
 #include "../discord/state.h"
+#include "terminal.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,20 +21,57 @@ void ui_init(UIState *ui) {
 }
 
 static void render_header(const char *title, const char *hint) {
-    printf("%s%s %-36s %s%s%s\n", COLOR_BOLD, COLOR_CYAN, title, COLOR_DIM, hint, COLOR_RESET);
-    printf("%s------------------------------------------------------------%s\n", COLOR_DIM, COLOR_RESET);
+    int term_width = terminal_get_width();
+    if (term_width < 40) term_width = 40;
+
+    int title_len = (int)strlen(title);
+    int hint_len = (int)strlen(hint);
+    int space = term_width - title_len - hint_len - 1;
+    if (space < 2) space = 2;
+
+    printf("%s%s%s%*s%s%s%s\n",
+           COLOR_BOLD, COLOR_CYAN, title,
+           space, "",
+           COLOR_DIM, hint, COLOR_RESET);
+
+    // Separator line across full width
+    for (int i = 0; i < term_width - 1; i++) {
+        putchar('-');
+    }
+    printf("\n");
 }
 
-static void render_row(bool is_selected, const char *label, int unread_count, int width) {
+static void render_row(bool is_selected, const char *label, int unread_count) {
+    int term_width = terminal_get_width();
+    if (term_width < 40) term_width = 40;
+
     char count_str[16] = "";
+    int count_len = 0;
     if (unread_count > 0) {
-        snprintf(count_str, sizeof(count_str), "%d", unread_count);
+        snprintf(count_str, sizeof(count_str), "[%d]", unread_count);
+        count_len = (int)strlen(count_str);
     }
 
+    // Row format: "  Label" or "> Label" on the left, count on the far right
+    // Prefix is 2 chars: "> " or "  "
+    int prefix_len = 2;
+    int right_margin = 1;
+    int available_for_label = term_width - prefix_len - count_len - right_margin - 1;
+    if (available_for_label < 10) available_for_label = 10;
+
+    char truncated_label[256];
+    snprintf(truncated_label, sizeof(truncated_label), "%.*s", available_for_label, label);
+    int actual_label_len = (int)strlen(truncated_label);
+
+    int padding = term_width - prefix_len - actual_label_len - count_len - right_margin;
+    if (padding < 1) padding = 1;
+
     if (is_selected) {
-        printf("%s> %-*.*s | %-4s%s\n", COLOR_INVERT, width, width, label, count_str, COLOR_RESET);
+        printf("%s> %s%*s%s%s\n",
+               COLOR_INVERT, truncated_label, padding, "", count_str, COLOR_RESET);
     } else {
-        printf("  %-*.*s | %s%-4s%s\n", width, width, label,
+        printf("  %s%*s%s%s%s\n",
+               truncated_label, padding, "",
                (unread_count > 0 ? COLOR_YELLOW : COLOR_DIM), count_str, COLOR_RESET);
     }
 }
@@ -45,7 +83,7 @@ static void render_main_menu(UIState *ui, DiscordState *state) {
     } else {
         snprintf(header_title, sizeof(header_title), "Discord CLI");
     }
-    render_header(header_title, "[↑/↓] Navigate  [Enter] Open  [q] Quit");
+    render_header(header_title, "[^/v] Navigate  [Enter] Open  [q] Quit");
 
     int total_items = 1 + state->guild_count;
     if (ui->main_selected_idx >= total_items) {
@@ -53,16 +91,22 @@ static void render_main_menu(UIState *ui, DiscordState *state) {
     }
 
     // Row 0: Direct Messages
-    render_row(ui->main_selected_idx == 0, "Direct Messages", state->dm_total_unread, 32);
+    render_row(ui->main_selected_idx == 0, "Direct Messages", state->dm_total_unread);
 
     // Rows 1..N: Servers
     for (int i = 0; i < state->guild_count; i++) {
-        render_row(ui->main_selected_idx == (i + 1), state->guilds[i].name, state->guilds[i].unread_count, 32);
+        char display_name[128];
+        if (strlen(state->guilds[i].name) > 0) {
+            snprintf(display_name, sizeof(display_name), "%s", state->guilds[i].name);
+        } else {
+            snprintf(display_name, sizeof(display_name), "Server %s", state->guilds[i].id);
+        }
+        render_row(ui->main_selected_idx == (i + 1), display_name, state->guilds[i].unread_count);
     }
 }
 
 static void render_dms_list(UIState *ui, DiscordState *state) {
-    render_header("Direct Messages", "[↑/↓] Navigate  [Enter] Chat  [Esc] Back");
+    render_header("Direct Messages", "[^/v] Navigate  [Enter] Chat  [Esc] Back");
 
     if (state->dm_count == 0) {
         printf("  %sNo direct messages found.%s\n", COLOR_DIM, COLOR_RESET);
@@ -80,7 +124,7 @@ static void render_dms_list(UIState *ui, DiscordState *state) {
         } else {
             snprintf(label, sizeof(label), "%s (@%s)", state->dms[i].display_name, state->dms[i].username);
         }
-        render_row(ui->dm_selected_idx == i, label, state->dms[i].unread_count, 36);
+        render_row(ui->dm_selected_idx == i, label, state->dms[i].unread_count);
     }
 }
 
@@ -93,7 +137,7 @@ static void render_guild_channels(UIState *ui, DiscordState *state) {
     DiscordGuild *guild = &state->guilds[ui->guild_selected_idx];
     char title[128];
     snprintf(title, sizeof(title), "Server: %s", guild->name);
-    render_header(title, "[↑/↓] Navigate  [Enter] Select  [Esc] Back");
+    render_header(title, "[^/v] Navigate  [Enter] Select  [Esc] Back");
 
     if (guild->channel_count == 0) {
         printf("  %sNo text channels available.%s\n", COLOR_DIM, COLOR_RESET);
@@ -107,7 +151,7 @@ static void render_guild_channels(UIState *ui, DiscordState *state) {
     for (int i = 0; i < guild->channel_count; i++) {
         char label[128];
         snprintf(label, sizeof(label), "#%s", guild->channels[i].name);
-        render_row(ui->channel_selected_idx == i, label, guild->channels[i].unread_count, 32);
+        render_row(ui->channel_selected_idx == i, label, guild->channels[i].unread_count);
     }
 }
 
@@ -134,8 +178,10 @@ static void render_chat(UIState *ui, DiscordState *state) {
     }
 
     // Input prompt at bottom
-    printf("\n%s------------------------------------------------------------%s\n", COLOR_DIM, COLOR_RESET);
-    printf("Message: %s", ui->input_buffer);
+    int term_width = terminal_get_width();
+    printf("\n");
+    for (int i = 0; i < term_width - 1; i++) putchar('-');
+    printf("\nMessage: %s", ui->input_buffer);
     fflush(stdout);
 }
 
@@ -280,7 +326,6 @@ bool ui_handle_input(UIState *ui, DiscordState *state, const char *token, const 
                 discord_state_clear_active_channel(state);
                 ui->input_len = 0;
                 ui->input_buffer[0] = '\0';
-                // Return to previous view
                 if (ui->main_selected_idx == 0) {
                     ui->current_view = VIEW_DMS_LIST;
                 } else {
@@ -298,14 +343,11 @@ bool ui_handle_input(UIState *ui, DiscordState *state, const char *token, const 
                     char text_to_send[1024];
                     strncpy_s(text_to_send, sizeof(text_to_send), ui->input_buffer, _TRUNCATE);
 
-                    // Clear input immediately
                     ui->input_len = 0;
                     ui->input_buffer[0] = '\0';
 
-                    // Send to discord REST API
                     discord_api_send_message(token, state->active_channel_id, text_to_send);
 
-                    // Add to local message list immediately for responsiveness
                     DiscordMessage local_msg;
                     memset(&local_msg, 0, sizeof(local_msg));
                     strncpy_s(local_msg.content, sizeof(local_msg.content), text_to_send, _TRUNCATE);
@@ -330,4 +372,3 @@ bool ui_handle_input(UIState *ui, DiscordState *state, const char *token, const 
 
     return true;
 }
-

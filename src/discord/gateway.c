@@ -133,7 +133,9 @@ static void handle_gateway_message(const char *msg, DiscordState *state) {
         case 0: { // DISPATCH
             if (cJSON_IsString(t) && t->valuestring) {
                 if (strcmp(t->valuestring, "READY") == 0) {
-                    discord_state_parse_ready(state, msg);
+                    discord_state_parse_ready(state, msg, g_token);
+                } else if (strcmp(t->valuestring, "GUILD_CREATE") == 0) {
+                    discord_state_handle_guild_create(state, msg);
                 } else if (strcmp(t->valuestring, "MESSAGE_CREATE") == 0) {
                     discord_state_handle_message_create(state, msg);
                 } else if (strcmp(t->valuestring, "MESSAGE_ACK") == 0) {

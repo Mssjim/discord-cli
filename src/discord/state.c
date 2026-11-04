@@ -1,4 +1,5 @@
 #include "state.h"
+#include "api.h"
 #include "../../lib/cjson/cJSON.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,7 +28,6 @@ static void safe_strcpy(char *dest, size_t dest_size, const char *src) {
 static int compare_dms(const void *a, const void *b) {
     const DiscordDM *dmA = (const DiscordDM *)a;
     const DiscordDM *dmB = (const DiscordDM *)b;
-    // Discord snowflake IDs are chronological strings. Longer or lexicographically greater means newer.
     size_t lenA = strlen(dmA->last_message_id);
     size_t lenB = strlen(dmB->last_message_id);
     if (lenA != lenB) {
@@ -36,7 +36,7 @@ static int compare_dms(const void *a, const void *b) {
     return strcmp(dmB->last_message_id, dmA->last_message_id);
 }
 
-void discord_state_parse_ready(DiscordState *state, const char *json_str) {
+void discord_state_parse_ready(DiscordState *state, const char *json_str, const char *token) {
     if (!state || !json_str) return;
 
     cJSON *root = cJSON_Parse(json_str);
@@ -158,13 +158,12 @@ void discord_state_parse_ready(DiscordState *state, const char *json_str) {
             state->dm_count++;
         }
 
-        // Sort DMs by recent activity (last_message_id)
         if (state->dm_count > 1) {
             qsort(state->dms, state->dm_count, sizeof(DiscordDM), compare_dms);
         }
     }
 
-    // 4. Raw Guilds (Allocated on heap to prevent stack overflow on thread stack)
+    // 4. Raw Guilds from READY
     DiscordGuild *raw_guilds = (DiscordGuild *)malloc(sizeof(DiscordGuild) * MAX_GUILDS);
     int raw_guild_count = 0;
 
@@ -228,6 +227,34 @@ void discord_state_parse_ready(DiscordState *state, const char *json_str) {
             }
         }
 
+        // Fallback / Supplement: If READY guilds have missing names (lazy guilds),
+        // query REST API /users/@me/guilds
+        bool names_missing = false;
+        for (int i = 0; i < raw_guild_count; i++) {
+            if (strlen(raw_guilds[i].name) == 0) {
+                names_missing = true;
+                break;
+            }
+        }
+
+        if (names_missing && token && strlen(token) > 0) {
+            DiscordGuild *rest_guilds = (DiscordGuild *)malloc(sizeof(DiscordGuild) * MAX_GUILDS);
+            int rest_count = 0;
+            if (rest_guilds && discord_api_fetch_guilds(token, rest_guilds, MAX_GUILDS, &rest_count)) {
+                for (int i = 0; i < raw_guild_count; i++) {
+                    if (strlen(raw_guilds[i].name) == 0) {
+                        for (int j = 0; j < rest_count; j++) {
+                            if (strcmp(raw_guilds[i].id, rest_guilds[j].id) == 0) {
+                                safe_strcpy(raw_guilds[i].name, sizeof(raw_guilds[i].name), rest_guilds[j].name);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if (rest_guilds) free(rest_guilds);
+        }
+
         // 5. User Guild Positions (Original server order)
         cJSON *user_settings = cJSON_GetObjectItemCaseSensitive(d, "user_settings");
         cJSON *guild_positions = NULL;
@@ -267,6 +294,85 @@ void discord_state_parse_ready(DiscordState *state, const char *json_str) {
 
     state->is_ready = true;
     state->needs_redraw = true;
+
+    DISCORD_MUTEX_UNLOCK(&state->lock);
+    cJSON_Delete(root);
+}
+
+void discord_state_handle_guild_create(DiscordState *state, const char *json_str) {
+    if (!state || !json_str) return;
+
+    cJSON *root = cJSON_Parse(json_str);
+    if (!root) return;
+
+    cJSON *d = cJSON_GetObjectItemCaseSensitive(root, "d");
+    if (!d) {
+        cJSON_Delete(root);
+        return;
+    }
+
+    cJSON *gid = cJSON_GetObjectItemCaseSensitive(d, "id");
+    cJSON *gname = cJSON_GetObjectItemCaseSensitive(d, "name");
+    cJSON *channels = cJSON_GetObjectItemCaseSensitive(d, "channels");
+
+    if (!cJSON_IsString(gid)) {
+        cJSON_Delete(root);
+        return;
+    }
+
+    DISCORD_MUTEX_LOCK(&state->lock);
+
+    // Check if guild already exists in state
+    DiscordGuild *target_guild = NULL;
+    for (int i = 0; i < state->guild_count; i++) {
+        if (strcmp(state->guilds[i].id, gid->valuestring) == 0) {
+            target_guild = &state->guilds[i];
+            break;
+        }
+    }
+
+    // If not found and space allows, append new guild
+    if (!target_guild && state->guild_count < MAX_GUILDS) {
+        target_guild = &state->guilds[state->guild_count++];
+        memset(target_guild, 0, sizeof(DiscordGuild));
+        safe_strcpy(target_guild->id, sizeof(target_guild->id), gid->valuestring);
+    }
+
+    if (target_guild) {
+        if (cJSON_IsString(gname)) {
+            safe_strcpy(target_guild->name, sizeof(target_guild->name), gname->valuestring);
+        }
+
+        if (cJSON_IsArray(channels)) {
+            target_guild->channel_count = 0;
+            cJSON *ch = NULL;
+            cJSON_ArrayForEach(ch, channels) {
+                if (target_guild->channel_count >= MAX_CHANNELS_PER_GUILD) break;
+
+                cJSON *cid = cJSON_GetObjectItemCaseSensitive(ch, "id");
+                cJSON *cname = cJSON_GetObjectItemCaseSensitive(ch, "name");
+                cJSON *ctype = cJSON_GetObjectItemCaseSensitive(ch, "type");
+                cJSON *cpos = cJSON_GetObjectItemCaseSensitive(ch, "position");
+                cJSON *clast = cJSON_GetObjectItemCaseSensitive(ch, "last_message_id");
+
+                if (!cJSON_IsString(cid)) continue;
+
+                int type_val = cJSON_IsNumber(ctype) ? ctype->valueint : 0;
+                if (type_val != 0 && type_val != 5) continue;
+
+                DiscordChannel *chan_obj = &target_guild->channels[target_guild->channel_count];
+                memset(chan_obj, 0, sizeof(DiscordChannel));
+                safe_strcpy(chan_obj->id, sizeof(chan_obj->id), cid->valuestring);
+                if (cJSON_IsString(cname)) safe_strcpy(chan_obj->name, sizeof(chan_obj->name), cname->valuestring);
+                chan_obj->type = type_val;
+                chan_obj->position = cJSON_IsNumber(cpos) ? cpos->valueint : target_guild->channel_count;
+                if (cJSON_IsString(clast)) safe_strcpy(chan_obj->last_message_id, sizeof(chan_obj->last_message_id), clast->valuestring);
+
+                target_guild->channel_count++;
+            }
+        }
+        state->needs_redraw = true;
+    }
 
     DISCORD_MUTEX_UNLOCK(&state->lock);
     cJSON_Delete(root);
@@ -319,7 +425,6 @@ void discord_state_handle_message_create(DiscordState *state, const char *json_s
                 }
             }
 
-            // Parse timestamp e.g. "2026-11-03T17:10:00.000000+00:00" -> extract "17:10"
             if (cJSON_IsString(timestamp) && strlen(timestamp->valuestring) >= 16) {
                 const char *t = strchr(timestamp->valuestring, 'T');
                 if (t && strlen(t) >= 6) {
@@ -347,7 +452,6 @@ void discord_state_handle_message_create(DiscordState *state, const char *json_s
             }
         }
 
-        // If not DM, check Guilds
         if (!found_dm) {
             for (int g = 0; g < state->guild_count; g++) {
                 for (int c = 0; c < state->guilds[g].channel_count; c++) {

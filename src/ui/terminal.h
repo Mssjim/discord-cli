@@ -27,9 +27,9 @@ void terminal_clear(void);
 void terminal_hide_cursor(void);
 void terminal_show_cursor(void);
 void terminal_set_cursor(int row, int col);
+int terminal_get_width(void);
 
 // Checks if a key is available; if timeout_ms > 0, waits up to timeout_ms
 bool terminal_read_key(KeyEvent *event, int timeout_ms);
 
 #endif // TERMINAL_H
-
