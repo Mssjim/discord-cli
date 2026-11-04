@@ -227,6 +227,12 @@ bool terminal_read_key(KeyEvent *event, int timeout_ms) {
                         case VK_RIGHT:
                             event->type = KEY_RIGHT;
                             return true;
+                        case VK_PRIOR:
+                            event->type = KEY_PAGE_UP;
+                            return true;
+                        case VK_NEXT:
+                            event->type = KEY_PAGE_DOWN;
+                            return true;
                         case VK_RETURN:
                             event->type = KEY_ENTER;
                             return true;

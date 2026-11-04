@@ -60,21 +60,43 @@ static int utf8_display_width(const char *utf8_str) {
 #endif
 }
 
-static void render_header(const char *title, const char *hint, bool hide_header) {
+static void render_header(const char *title, const char *hint, bool hide_header, bool show_back) {
     if (hide_header) return;
 
     int term_width = terminal_get_width();
     if (term_width < 40) term_width = 40;
 
-    int title_len = (int)strlen(title);
-    int hint_len = (int)strlen(hint);
-    int space = term_width - title_len - hint_len - 1;
-    if (space < 2) space = 2;
+    int back_width = show_back ? 10 : 0; // " [< Back] "
+    int hint_width = hint ? utf8_display_width(hint) : 0;
 
-    printf("%s%s%s%*s%s%s%s\n",
-           COLOR_BOLD, COLOR_CYAN, title,
-           space, "",
-           COLOR_DIM, hint, COLOR_RESET);
+    int avail_title = term_width - 1 - back_width - (hint_width > 0 ? hint_width + 2 : 0);
+    if (avail_title < 6) {
+        hint_width = 0;
+        avail_title = term_width - 1 - back_width - 2;
+    }
+
+    char disp_title[128];
+    strncpy_s(disp_title, sizeof(disp_title), title ? title : "", _TRUNCATE);
+    while (utf8_display_width(disp_title) > avail_title && strlen(disp_title) > 0) {
+        disp_title[strlen(disp_title) - 1] = '\0';
+    }
+    int title_width = utf8_display_width(disp_title);
+
+    int space = term_width - 1 - back_width - title_width - (hint_width > 0 ? hint_width : 0);
+    if (space < 1) space = 1;
+
+    if (show_back) {
+        printf("%s [< Back] %s", COLOR_INVERT, COLOR_RESET);
+    }
+
+    if (hint_width > 0) {
+        printf("%s%s%s%*s%s%s%s\n",
+               COLOR_BOLD, COLOR_CYAN, disp_title,
+               space, "",
+               COLOR_DIM, hint, COLOR_RESET);
+    } else {
+        printf("%s%s%s\n", COLOR_BOLD, COLOR_CYAN, disp_title);
+    }
 
     // Separator line across full width
     for (int i = 0; i < term_width - 1; i++) {
@@ -145,7 +167,7 @@ static void render_main_menu(UIState *ui, DiscordState *state) {
     } else {
         snprintf(header_title, sizeof(header_title), "Discord CLI");
     }
-    render_header(header_title, "[^/v] Nav  [Enter] Open  [H] Hide  [q] Quit", ui->hide_header);
+    render_header(header_title, "[^/v] Nav  [Enter] Open  [H] Hide  [q] Quit", ui->hide_header, false);
 
     int total_items = 1 + state->guild_count;
     if (ui->main_selected_idx >= total_items) {
@@ -188,7 +210,7 @@ static void render_main_menu(UIState *ui, DiscordState *state) {
 }
 
 static void render_dms_list(UIState *ui, DiscordState *state) {
-    render_header("Direct Messages", "[^/v] Nav  [Enter] Chat  [H] Hide  [Esc] Back", ui->hide_header);
+    render_header("Direct Messages", "[^/v] Nav  [Enter] Chat  [H] Hide  [Esc] Back", ui->hide_header, true);
 
     if (state->dm_count == 0) {
         printf("  %sNo direct messages found.%s\n", COLOR_DIM, COLOR_RESET);
@@ -237,7 +259,7 @@ static void render_guild_channels(UIState *ui, DiscordState *state) {
     DiscordGuild *guild = &state->guilds[ui->guild_selected_idx];
     char title[128];
     snprintf(title, sizeof(title), "Server: %s", guild->name);
-    render_header(title, "[^/v] Nav  [Enter] Select  [H] Hide  [Esc] Back", ui->hide_header);
+    render_header(title, "[^/v] Nav  [Enter] Select  [H] Hide  [Esc] Back", ui->hide_header, true);
 
     if (guild->channel_count == 0) {
         printf("  %sNo text channels available.%s\n", COLOR_DIM, COLOR_RESET);
@@ -276,7 +298,14 @@ static void render_guild_channels(UIState *ui, DiscordState *state) {
 static void render_chat(UIState *ui, DiscordState *state) {
     char title[128];
     snprintf(title, sizeof(title), "# %s", state->active_channel_name);
-    render_header(title, "[Esc] Back to menu", ui->hide_header);
+
+    char hint[64];
+    if (ui->chat_scroll_offset > 0) {
+        snprintf(hint, sizeof(hint), "[Scroll: +%d]  [Esc] Back", ui->chat_scroll_offset);
+    } else {
+        snprintf(hint, sizeof(hint), "[Wheel] Scroll  [Esc] Back");
+    }
+    render_header(title, hint, ui->hide_header, true);
 
     int term_height = terminal_get_height();
     int term_width = terminal_get_width();
@@ -285,15 +314,27 @@ static void render_chat(UIState *ui, DiscordState *state) {
     int max_chat_lines = term_height - reserved_chat;
     if (max_chat_lines < 2) max_chat_lines = 2;
 
+    int total_msgs = state->current_message_count;
+    int max_scroll = (total_msgs > max_chat_lines) ? (total_msgs - max_chat_lines) : 0;
+    if (ui->chat_scroll_offset > max_scroll) ui->chat_scroll_offset = max_scroll;
+    if (ui->chat_scroll_offset < 0) ui->chat_scroll_offset = 0;
+
     int start_msg = 0;
-    if (state->current_message_count > max_chat_lines) {
-        start_msg = state->current_message_count - max_chat_lines;
+    int end_msg = total_msgs;
+
+    if (total_msgs > max_chat_lines) {
+        end_msg = total_msgs - ui->chat_scroll_offset;
+        start_msg = end_msg - max_chat_lines;
+        if (start_msg < 0) {
+            start_msg = 0;
+            end_msg = max_chat_lines;
+        }
     }
 
-    if (state->current_message_count == 0) {
+    if (total_msgs == 0) {
         printf("  %sNo recent messages or loading...%s\n\n", COLOR_DIM, COLOR_RESET);
     } else {
-        for (int i = start_msg; i < state->current_message_count; i++) {
+        for (int i = start_msg; i < end_msg; i++) {
             DiscordMessage *m = &state->current_messages[i];
             bool is_self = (strlen(state->user_id) > 0 && strcmp(m->author_id, state->user_id) == 0);
 
@@ -308,7 +349,18 @@ static void render_chat(UIState *ui, DiscordState *state) {
 
     // Input prompt at bottom
     printf("\n");
-    for (int i = 0; i < term_width - 1; i++) putchar('-');
+    if (ui->chat_scroll_offset > 0) {
+        char scroll_info[64];
+        snprintf(scroll_info, sizeof(scroll_info), "-- [Scroll: +%d new below (scroll down to bottom)] --", ui->chat_scroll_offset);
+        int info_len = (int)strlen(scroll_info);
+        int pad = (term_width - 1 - info_len) / 2;
+        if (pad < 0) pad = 0;
+        for (int i = 0; i < pad; i++) putchar('-');
+        printf("%s%s%s", COLOR_YELLOW, scroll_info, COLOR_RESET);
+        for (int i = pad + info_len; i < term_width - 1; i++) putchar('-');
+    } else {
+        for (int i = 0; i < term_width - 1; i++) putchar('-');
+    }
     printf("\nMessage: %s", ui->input_buffer);
     fflush(stdout);
 }
@@ -357,10 +409,11 @@ static void open_channel(UIState *ui, DiscordState *state, const char *token, co
     ui->input_len = 0;
     ui->input_buffer[0] = '\0';
     ui->scroll_offset = 0;
+    ui->chat_scroll_offset = 0;
 
     DiscordMessage fetched[MAX_CACHED_MESSAGES];
     int count = 0;
-    if (discord_api_fetch_messages(token, channel_id, 30, fetched, &count)) {
+    if (discord_api_fetch_messages(token, channel_id, MAX_CACHED_MESSAGES, fetched, &count)) {
         discord_state_set_messages(state, fetched, count);
         if (count > 0) {
             discord_api_ack_message(token, channel_id, fetched[count - 1].id);
@@ -448,10 +501,12 @@ bool ui_handle_input(UIState *ui, DiscordState *state, const char *token, const 
                 state->needs_redraw = true;
                 return true;
             }
-            if (event->type == KEY_ESC || (event->type == KEY_CHAR && (event->ch == 'b' || event->ch == 'B'))) {
+            if (event->type == KEY_ESC || (event->type == KEY_CHAR && (event->ch == 'b' || event->ch == 'B')) ||
+                (event->type == KEY_MOUSE_CLICK && !ui->hide_header && event->mouse_y == 0 && event->mouse_x <= 11)) {
                 ui->current_view = VIEW_MAIN_MENU;
                 ui->scroll_offset = 0;
                 state->needs_redraw = true;
+                return true;
             } else if (event->type == KEY_UP) {
                 if (ui->dm_selected_idx > 0) ui->dm_selected_idx--;
                 state->needs_redraw = true;
@@ -501,10 +556,12 @@ bool ui_handle_input(UIState *ui, DiscordState *state, const char *token, const 
                 state->needs_redraw = true;
                 return true;
             }
-            if (event->type == KEY_ESC || (event->type == KEY_CHAR && (event->ch == 'b' || event->ch == 'B'))) {
+            if (event->type == KEY_ESC || (event->type == KEY_CHAR && (event->ch == 'b' || event->ch == 'B')) ||
+                (event->type == KEY_MOUSE_CLICK && !ui->hide_header && event->mouse_y == 0 && event->mouse_x <= 11)) {
                 ui->current_view = VIEW_MAIN_MENU;
                 ui->scroll_offset = 0;
                 state->needs_redraw = true;
+                return true;
             } else if (event->type == KEY_UP) {
                 if (ui->channel_selected_idx > 0) ui->channel_selected_idx--;
                 state->needs_redraw = true;
@@ -544,17 +601,62 @@ bool ui_handle_input(UIState *ui, DiscordState *state, const char *token, const 
         }
 
         case VIEW_CHAT: {
-            if (event->type == KEY_ESC) {
+            int term_height = terminal_get_height();
+            int term_width = terminal_get_width();
+            int reserved_chat = ui->hide_header ? 3 : 5;
+            int max_chat_lines = term_height - reserved_chat;
+            if (max_chat_lines < 2) max_chat_lines = 2;
+            int total_msgs = state->current_message_count;
+            int max_scroll = (total_msgs > max_chat_lines) ? (total_msgs - max_chat_lines) : 0;
+
+            if (event->type == KEY_ESC ||
+                (event->type == KEY_MOUSE_CLICK && !ui->hide_header && event->mouse_y == 0 && (event->mouse_x <= 11 || event->mouse_x >= term_width - 16))) {
                 discord_state_clear_active_channel(state);
                 ui->input_len = 0;
                 ui->input_buffer[0] = '\0';
                 ui->scroll_offset = 0;
+                ui->chat_scroll_offset = 0;
                 if (ui->main_selected_idx == 0) {
                     ui->current_view = VIEW_DMS_LIST;
                 } else {
                     ui->current_view = VIEW_GUILD_CHANNELS;
                 }
                 state->needs_redraw = true;
+                return true;
+            } else if (event->type == KEY_UP) {
+                // Scroll up (view older messages)
+                if (max_scroll > 0 && ui->chat_scroll_offset < max_scroll) {
+                    ui->chat_scroll_offset += 2;
+                    if (ui->chat_scroll_offset > max_scroll) ui->chat_scroll_offset = max_scroll;
+                    state->needs_redraw = true;
+                }
+            } else if (event->type == KEY_DOWN) {
+                // Scroll down (view newer messages)
+                if (ui->chat_scroll_offset > 0) {
+                    ui->chat_scroll_offset -= 2;
+                    if (ui->chat_scroll_offset < 0) ui->chat_scroll_offset = 0;
+                    state->needs_redraw = true;
+                }
+            } else if (event->type == KEY_PAGE_UP) {
+                if (max_scroll > 0 && ui->chat_scroll_offset < max_scroll) {
+                    int step = max_chat_lines / 2 > 1 ? max_chat_lines / 2 : 5;
+                    ui->chat_scroll_offset += step;
+                    if (ui->chat_scroll_offset > max_scroll) ui->chat_scroll_offset = max_scroll;
+                    state->needs_redraw = true;
+                }
+            } else if (event->type == KEY_PAGE_DOWN) {
+                if (ui->chat_scroll_offset > 0) {
+                    int step = max_chat_lines / 2 > 1 ? max_chat_lines / 2 : 5;
+                    ui->chat_scroll_offset -= step;
+                    if (ui->chat_scroll_offset < 0) ui->chat_scroll_offset = 0;
+                    state->needs_redraw = true;
+                }
+            } else if (event->type == KEY_MOUSE_CLICK) {
+                // If user clicks near bottom scroll bar, jump to newest
+                if (ui->chat_scroll_offset > 0 && event->mouse_y >= term_height - 3) {
+                    ui->chat_scroll_offset = 0;
+                    state->needs_redraw = true;
+                }
             } else if (event->type == KEY_BACKSPACE) {
                 if (ui->input_len > 0) {
                     ui->input_len--;
@@ -563,6 +665,7 @@ bool ui_handle_input(UIState *ui, DiscordState *state, const char *token, const 
                 }
             } else if (event->type == KEY_ENTER) {
                 if (ui->input_len > 0) {
+                    ui->chat_scroll_offset = 0; // jump to bottom on send
                     char text_to_send[1024];
                     strncpy_s(text_to_send, sizeof(text_to_send), ui->input_buffer, _TRUNCATE);
 

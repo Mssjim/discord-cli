@@ -9,6 +9,8 @@ typedef enum {
     KEY_DOWN,
     KEY_LEFT,
     KEY_RIGHT,
+    KEY_PAGE_UP,
+    KEY_PAGE_DOWN,
     KEY_ENTER,
     KEY_ESC,
     KEY_BACKSPACE,

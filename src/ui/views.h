@@ -24,6 +24,7 @@ typedef struct {
 
     // View state
     int scroll_offset;
+    int chat_scroll_offset;     // Messages scrolled up from the bottom in chat view
     bool hide_header;           // [H] Toggle to hide/show top menu header
 } UIState;
 
