@@ -5,6 +5,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #define COLOR_RESET   "\x1b[0m"
 #define COLOR_BOLD    "\x1b[1m"
@@ -18,9 +21,48 @@ void ui_init(UIState *ui) {
     if (!ui) return;
     memset(ui, 0, sizeof(UIState));
     ui->current_view = VIEW_MAIN_MENU;
+    ui->hide_header = false;
 }
 
-static void render_header(const char *title, const char *hint) {
+static int utf8_display_width(const char *utf8_str) {
+    if (!utf8_str) return 0;
+#ifdef _WIN32
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, utf8_str, -1, NULL, 0);
+    if (wlen <= 1) return 0;
+    wchar_t *wstr = (wchar_t *)malloc(wlen * sizeof(wchar_t));
+    if (!wstr) return (int)strlen(utf8_str);
+    MultiByteToWideChar(CP_UTF8, 0, utf8_str, -1, wstr, wlen);
+
+    int width = 0;
+    for (int i = 0; i < wlen - 1; i++) {
+        wchar_t ch = wstr[i];
+        if ((ch >= 0x1100 && ch <= 0x115F) ||
+            (ch >= 0x2E80 && ch <= 0xA4CF) ||
+            (ch >= 0xAC00 && ch <= 0xD7A3) ||
+            (ch >= 0xF900 && ch <= 0xFAFF) ||
+            (ch >= 0xFE10 && ch <= 0xFE19) ||
+            (ch >= 0xFE30 && ch <= 0xFE6F) ||
+            (ch >= 0xFF00 && ch <= 0xFF60) ||
+            (ch >= 0xFFE0 && ch <= 0xFFE6) ||
+            (ch >= 0xD800 && ch <= 0xDBFF)) {
+            width += 2;
+            if (ch >= 0xD800 && ch <= 0xDBFF && i + 1 < wlen - 1) {
+                i++; // skip low surrogate
+            }
+        } else {
+            width += 1;
+        }
+    }
+    free(wstr);
+    return width;
+#else
+    return (int)strlen(utf8_str);
+#endif
+}
+
+static void render_header(const char *title, const char *hint, bool hide_header) {
+    if (hide_header) return;
+
     int term_width = terminal_get_width();
     if (term_width < 40) term_width = 40;
 
@@ -46,30 +88,36 @@ static void render_row(bool is_selected, const char *label, int unread_count) {
     if (term_width < 40) term_width = 40;
 
     char count_str[16] = "";
-    int count_len = 0;
+    int count_width = 0;
     if (unread_count > 0) {
         snprintf(count_str, sizeof(count_str), "[%d]", unread_count);
-        count_len = (int)strlen(count_str);
+        count_width = (int)strlen(count_str);
     }
 
-    int prefix_len = 2; // "> " or "  "
+    int prefix_width = 2; // "> " or "  "
     int right_margin = 1;
-    int available_for_label = term_width - prefix_len - count_len - right_margin - 2;
-    if (available_for_label < 10) available_for_label = 10;
+    int max_label_width = term_width - prefix_width - (count_width > 0 ? (count_width + 1) : 0) - right_margin;
+    if (max_label_width < 8) max_label_width = 8;
 
-    char truncated_label[256];
-    snprintf(truncated_label, sizeof(truncated_label), "%.*s", available_for_label, label);
-    int actual_label_len = (int)strlen(truncated_label);
+    // Truncate label according to actual display width
+    char disp_label[256];
+    strncpy_s(disp_label, sizeof(disp_label), label, _TRUNCATE);
 
-    int padding = term_width - prefix_len - actual_label_len - count_len - right_margin;
+    int label_disp_width = utf8_display_width(disp_label);
+    while (label_disp_width > max_label_width && strlen(disp_label) > 0) {
+        disp_label[strlen(disp_label) - 1] = '\0';
+        label_disp_width = utf8_display_width(disp_label);
+    }
+
+    int padding = term_width - prefix_width - label_disp_width - count_width - right_margin;
     if (padding < 1) padding = 1;
 
     if (is_selected) {
         printf("%s> %s%*s%s%s\n",
-               COLOR_INVERT, truncated_label, padding, "", count_str, COLOR_RESET);
+               COLOR_INVERT, disp_label, padding, "", count_str, COLOR_RESET);
     } else {
         printf("  %s%*s%s%s%s\n",
-               truncated_label, padding, "",
+               disp_label, padding, "",
                (unread_count > 0 ? COLOR_YELLOW : COLOR_DIM), count_str, COLOR_RESET);
     }
 }
@@ -97,7 +145,7 @@ static void render_main_menu(UIState *ui, DiscordState *state) {
     } else {
         snprintf(header_title, sizeof(header_title), "Discord CLI");
     }
-    render_header(header_title, "[^/v] Navigate  [Enter] Open  [q] Quit");
+    render_header(header_title, "[^/v] Nav  [Enter] Open  [H] Hide  [q] Quit", ui->hide_header);
 
     int total_items = 1 + state->guild_count;
     if (ui->main_selected_idx >= total_items) {
@@ -105,7 +153,8 @@ static void render_main_menu(UIState *ui, DiscordState *state) {
     }
 
     int term_height = terminal_get_height();
-    int visible_rows = term_height - 4; // 2 for header, 1 for scroll hint/bottom, 1 margin
+    int reserved_lines = ui->hide_header ? 2 : 4;
+    int visible_rows = term_height - reserved_lines;
     if (visible_rows < 3) visible_rows = 3;
 
     // Adjust scroll offset to keep selected item visible
@@ -139,7 +188,7 @@ static void render_main_menu(UIState *ui, DiscordState *state) {
 }
 
 static void render_dms_list(UIState *ui, DiscordState *state) {
-    render_header("Direct Messages", "[^/v] Navigate  [Enter] Chat  [Esc] Back");
+    render_header("Direct Messages", "[^/v] Nav  [Enter] Chat  [H] Hide  [Esc] Back", ui->hide_header);
 
     if (state->dm_count == 0) {
         printf("  %sNo direct messages found.%s\n", COLOR_DIM, COLOR_RESET);
@@ -151,7 +200,8 @@ static void render_dms_list(UIState *ui, DiscordState *state) {
     }
 
     int term_height = terminal_get_height();
-    int visible_rows = term_height - 4;
+    int reserved_lines = ui->hide_header ? 2 : 4;
+    int visible_rows = term_height - reserved_lines;
     if (visible_rows < 3) visible_rows = 3;
 
     if (ui->dm_selected_idx < ui->scroll_offset) {
@@ -187,7 +237,7 @@ static void render_guild_channels(UIState *ui, DiscordState *state) {
     DiscordGuild *guild = &state->guilds[ui->guild_selected_idx];
     char title[128];
     snprintf(title, sizeof(title), "Server: %s", guild->name);
-    render_header(title, "[^/v] Navigate  [Enter] Select  [Esc] Back");
+    render_header(title, "[^/v] Nav  [Enter] Select  [H] Hide  [Esc] Back", ui->hide_header);
 
     if (guild->channel_count == 0) {
         printf("  %sNo text channels available.%s\n", COLOR_DIM, COLOR_RESET);
@@ -199,7 +249,8 @@ static void render_guild_channels(UIState *ui, DiscordState *state) {
     }
 
     int term_height = terminal_get_height();
-    int visible_rows = term_height - 4;
+    int reserved_lines = ui->hide_header ? 2 : 4;
+    int visible_rows = term_height - reserved_lines;
     if (visible_rows < 3) visible_rows = 3;
 
     if (ui->channel_selected_idx < ui->scroll_offset) {
@@ -225,13 +276,13 @@ static void render_guild_channels(UIState *ui, DiscordState *state) {
 static void render_chat(UIState *ui, DiscordState *state) {
     char title[128];
     snprintf(title, sizeof(title), "# %s", state->active_channel_name);
-    render_header(title, "[Esc] Back to menu");
+    render_header(title, "[Esc] Back to menu", ui->hide_header);
 
     int term_height = terminal_get_height();
     int term_width = terminal_get_width();
 
-    // Reserve lines: Header (2 lines) + Input line & separator (3 lines) = 5 lines
-    int max_chat_lines = term_height - 5;
+    int reserved_chat = ui->hide_header ? 3 : 5;
+    int max_chat_lines = term_height - reserved_chat;
     if (max_chat_lines < 2) max_chat_lines = 2;
 
     int start_msg = 0;
@@ -307,7 +358,6 @@ static void open_channel(UIState *ui, DiscordState *state, const char *token, co
     ui->input_buffer[0] = '\0';
     ui->scroll_offset = 0;
 
-    // Fetch initial history
     DiscordMessage fetched[MAX_CACHED_MESSAGES];
     int count = 0;
     if (discord_api_fetch_messages(token, channel_id, 30, fetched, &count)) {
@@ -329,6 +379,11 @@ bool ui_handle_input(UIState *ui, DiscordState *state, const char *token, const 
         case VIEW_MAIN_MENU: {
             if (event->type == KEY_CHAR && (event->ch == 'q' || event->ch == 'Q')) {
                 return false; // Exit app
+            }
+            if (event->type == KEY_CHAR && (event->ch == 'h' || event->ch == 'H')) {
+                ui->hide_header = !ui->hide_header;
+                state->needs_redraw = true;
+                return true;
             }
             if (event->type == KEY_UP) {
                 if (ui->main_selected_idx > 0) ui->main_selected_idx--;
@@ -358,6 +413,11 @@ bool ui_handle_input(UIState *ui, DiscordState *state, const char *token, const 
         }
 
         case VIEW_DMS_LIST: {
+            if (event->type == KEY_CHAR && (event->ch == 'h' || event->ch == 'H')) {
+                ui->hide_header = !ui->hide_header;
+                state->needs_redraw = true;
+                return true;
+            }
             if (event->type == KEY_ESC || (event->type == KEY_CHAR && (event->ch == 'b' || event->ch == 'B'))) {
                 ui->current_view = VIEW_MAIN_MENU;
                 ui->scroll_offset = 0;
@@ -380,6 +440,11 @@ bool ui_handle_input(UIState *ui, DiscordState *state, const char *token, const 
         }
 
         case VIEW_GUILD_CHANNELS: {
+            if (event->type == KEY_CHAR && (event->ch == 'h' || event->ch == 'H')) {
+                ui->hide_header = !ui->hide_header;
+                state->needs_redraw = true;
+                return true;
+            }
             if (event->type == KEY_ESC || (event->type == KEY_CHAR && (event->ch == 'b' || event->ch == 'B'))) {
                 ui->current_view = VIEW_MAIN_MENU;
                 ui->scroll_offset = 0;

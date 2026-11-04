@@ -16,6 +16,38 @@ static UINT g_orig_output_cp = 0;
 static bool g_initialized = false;
 static int g_last_width = 80;
 static int g_last_height = 25;
+static HANDLE g_hInConsole = INVALID_HANDLE_VALUE;
+
+static HANDLE get_console_output_handle(void) {
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (hOut != INVALID_HANDLE_VALUE) {
+        DWORD mode;
+        if (GetConsoleMode(hOut, &mode)) {
+            return hOut;
+        }
+    }
+    return CreateFileW(L"CONOUT$", GENERIC_READ | GENERIC_WRITE,
+                       FILE_SHARE_READ | FILE_SHARE_WRITE,
+                       NULL, OPEN_EXISTING, 0, NULL);
+}
+
+void terminal_lock_buffer_size(void) {
+    HANDLE hOut = get_console_output_handle();
+    if (hOut != INVALID_HANDLE_VALUE) {
+        CONSOLE_SCREEN_BUFFER_INFO csbi;
+        if (GetConsoleScreenBufferInfo(hOut, &csbi)) {
+            int w = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+            int h = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
+            if (w > 10 && h > 3) {
+                COORD sz;
+                sz.X = (SHORT)w;
+                sz.Y = (SHORT)h;
+                SetConsoleScreenBufferSize(hOut, sz);
+            }
+        }
+        if (hOut != GetStdHandle(STD_OUTPUT_HANDLE)) CloseHandle(hOut);
+    }
+}
 
 void terminal_init(void) {
     if (g_initialized) return;
@@ -25,18 +57,29 @@ void terminal_init(void) {
     SetConsoleCP(CP_UTF8);
     SetConsoleOutputCP(CP_UTF8);
 
-    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    HANDLE hOut = get_console_output_handle();
     if (hOut != INVALID_HANDLE_VALUE) {
         GetConsoleMode(hOut, &g_orig_out_mode);
         DWORD out_mode = g_orig_out_mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING;
         SetConsoleMode(hOut, out_mode);
+        if (hOut != GetStdHandle(STD_OUTPUT_HANDLE)) CloseHandle(hOut);
     }
 
-    HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
-    if (hIn != INVALID_HANDLE_VALUE) {
-        GetConsoleMode(hIn, &g_orig_in_mode);
+    // Use alternate screen buffer so standard console scroll history is hidden and isolated
+    printf("\x1b[?1049h");
+    fflush(stdout);
+
+    // Open CONIN$ with mouse input enabled
+    g_hInConsole = CreateFileW(L"CONIN$", GENERIC_READ | GENERIC_WRITE,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE,
+                               NULL, OPEN_EXISTING, 0, NULL);
+    if (g_hInConsole != INVALID_HANDLE_VALUE) {
+        GetConsoleMode(g_hInConsole, &g_orig_in_mode);
+        DWORD in_mode = ENABLE_EXTENDED_FLAGS | ENABLE_WINDOW_INPUT | ENABLE_MOUSE_INPUT;
+        SetConsoleMode(g_hInConsole, in_mode);
     }
 
+    terminal_lock_buffer_size();
     g_last_width = terminal_get_width();
     g_last_height = terminal_get_height();
     g_initialized = true;
@@ -47,14 +90,20 @@ void terminal_cleanup(void) {
 
     terminal_show_cursor();
 
-    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    // Leave alternate screen buffer
+    printf("\x1b[?1049l");
+    fflush(stdout);
+
+    HANDLE hOut = get_console_output_handle();
     if (hOut != INVALID_HANDLE_VALUE) {
         SetConsoleMode(hOut, g_orig_out_mode);
+        if (hOut != GetStdHandle(STD_OUTPUT_HANDLE)) CloseHandle(hOut);
     }
 
-    HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
-    if (hIn != INVALID_HANDLE_VALUE) {
-        SetConsoleMode(hIn, g_orig_in_mode);
+    if (g_hInConsole != INVALID_HANDLE_VALUE) {
+        SetConsoleMode(g_hInConsole, g_orig_in_mode);
+        CloseHandle(g_hInConsole);
+        g_hInConsole = INVALID_HANDLE_VALUE;
     }
 
     SetConsoleCP(g_orig_cp);
@@ -63,7 +112,6 @@ void terminal_cleanup(void) {
 }
 
 void terminal_clear(void) {
-    // ANSI clear screen and move cursor to (1,1)
     printf("\x1b[2J\x1b[H");
     fflush(stdout);
 }
@@ -81,20 +129,6 @@ void terminal_show_cursor(void) {
 void terminal_set_cursor(int row, int col) {
     printf("\x1b[%d;%dH", row, col);
     fflush(stdout);
-}
-
-static HANDLE get_console_output_handle(void) {
-    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (hOut != INVALID_HANDLE_VALUE) {
-        DWORD mode;
-        if (GetConsoleMode(hOut, &mode)) {
-            return hOut;
-        }
-    }
-    // Fallback directly to the active console screen buffer
-    return CreateFileW(L"CONOUT$", GENERIC_READ | GENERIC_WRITE,
-                       FILE_SHARE_READ | FILE_SHARE_WRITE,
-                       NULL, OPEN_EXISTING, 0, NULL);
 }
 
 int terminal_get_width(void) {
@@ -131,6 +165,7 @@ bool terminal_check_resized(void) {
     if (cur_w != g_last_width || cur_h != g_last_height) {
         g_last_width = cur_w;
         g_last_height = cur_h;
+        terminal_lock_buffer_size();
         return true;
     }
     return false;
@@ -141,49 +176,77 @@ bool terminal_read_key(KeyEvent *event, int timeout_ms) {
     event->type = KEY_NONE;
     event->ch = 0;
 
-    int waited = 0;
-    while (!_kbhit()) {
-        if (timeout_ms <= 0) return false;
-        Sleep(20);
-        waited += 20;
-        if (waited >= timeout_ms) return false;
-    }
+    HANDLE hIn = (g_hInConsole != INVALID_HANDLE_VALUE) ? g_hInConsole : GetStdHandle(STD_INPUT_HANDLE);
+    if (hIn == INVALID_HANDLE_VALUE) return false;
 
-    int c = _getch();
-    if (c == 0 || c == 224) { // Extended key prefix
-        int ext = _getch();
-        switch (ext) {
-            case 72: event->type = KEY_UP; break;
-            case 80: event->type = KEY_DOWN; break;
-            case 75: event->type = KEY_LEFT; break;
-            case 77: event->type = KEY_RIGHT; break;
-            default: break;
-        }
-        return true;
-    }
+    DWORD waited = 0;
+    while (1) {
+        DWORD num_events = 0;
+        if (GetNumberOfConsoleInputEvents(hIn, &num_events) && num_events > 0) {
+            INPUT_RECORD ir;
+            DWORD read_count = 0;
+            if (ReadConsoleInputW(hIn, &ir, 1, &read_count) && read_count > 0) {
+                // 1. Mouse wheel event (Map mouse wheel up/down to KEY_UP/KEY_DOWN)
+                if (ir.EventType == MOUSE_EVENT) {
+                    if (ir.Event.MouseEvent.dwEventFlags & MOUSE_WHEELED) {
+                        int delta = (short)HIWORD(ir.Event.MouseEvent.dwButtonState);
+                        if (delta > 0) {
+                            event->type = KEY_UP;
+                            return true;
+                        } else if (delta < 0) {
+                            event->type = KEY_DOWN;
+                            return true;
+                        }
+                    }
+                }
+                // 2. Keyboard event
+                else if (ir.EventType == KEY_EVENT && ir.Event.KeyEvent.bKeyDown) {
+                    WORD vk = ir.Event.KeyEvent.wVirtualKeyCode;
+                    WCHAR wch = ir.Event.KeyEvent.uChar.UnicodeChar;
 
-    switch (c) {
-        case 13: // Enter
-            event->type = KEY_ENTER;
-            break;
-        case 27: // Esc
-            event->type = KEY_ESC;
-            break;
-        case 8:  // Backspace
-            event->type = KEY_BACKSPACE;
-            break;
-        case 9:  // Tab
-            event->type = KEY_TAB;
-            break;
-        default:
-            if (c >= 32 && c <= 255) {
-                event->type = KEY_CHAR;
-                event->ch = c;
+                    switch (vk) {
+                        case VK_UP:
+                            event->type = KEY_UP;
+                            return true;
+                        case VK_DOWN:
+                            event->type = KEY_DOWN;
+                            return true;
+                        case VK_LEFT:
+                            event->type = KEY_LEFT;
+                            return true;
+                        case VK_RIGHT:
+                            event->type = KEY_RIGHT;
+                            return true;
+                        case VK_RETURN:
+                            event->type = KEY_ENTER;
+                            return true;
+                        case VK_ESCAPE:
+                            event->type = KEY_ESC;
+                            return true;
+                        case VK_BACK:
+                            event->type = KEY_BACKSPACE;
+                            return true;
+                        case VK_TAB:
+                            event->type = KEY_TAB;
+                            return true;
+                        default:
+                            if (wch >= 32) {
+                                event->type = KEY_CHAR;
+                                event->ch = (int)wch;
+                                return true;
+                            }
+                            break;
+                    }
+                }
             }
-            break;
+        }
+
+        if ((int)waited >= timeout_ms) break;
+        Sleep(10);
+        waited += 10;
     }
 
-    return true;
+    return false;
 }
 
 #else

@@ -24,6 +24,7 @@ typedef struct {
 
     // View state
     int scroll_offset;
+    bool hide_header;           // [H] Toggle to hide/show top menu header
 } UIState;
 
 void ui_init(UIState *ui);
@@ -31,4 +32,3 @@ void ui_render(UIState *ui, DiscordState *state);
 bool ui_handle_input(UIState *ui, DiscordState *state, const char *token, const KeyEvent *event);
 
 #endif // VIEWS_H
-
