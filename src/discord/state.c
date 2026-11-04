@@ -136,29 +136,53 @@ void discord_state_parse_ready(DiscordState *state, const char *json_str, const 
             }
             state->dm_total_unread += dm->unread_count;
 
-            // Recipient info
-            if (cJSON_IsArray(recipients) && cJSON_GetArraySize(recipients) > 0) {
-                cJSON *rec = cJSON_GetArrayItem(recipients, 0);
-                cJSON *rid = cJSON_GetObjectItemCaseSensitive(rec, "id");
-                cJSON *rname = cJSON_GetObjectItemCaseSensitive(rec, "username");
-                cJSON *rgname = cJSON_GetObjectItemCaseSensitive(rec, "global_name");
+            // Recipient info (support single DM and multi-user Group DMs)
+            int num_recipients = (cJSON_IsArray(recipients)) ? cJSON_GetArraySize(recipients) : 0;
+            cJSON *cname = cJSON_GetObjectItemCaseSensitive(chan, "name");
+            bool has_custom_name = (cJSON_IsString(cname) && cname->valuestring && strlen(cname->valuestring) > 0);
 
-                if (cJSON_IsString(rid)) safe_strcpy(dm->recipient_id, sizeof(dm->recipient_id), rid->valuestring);
-                if (cJSON_IsString(rname)) safe_strcpy(dm->username, sizeof(dm->username), rname->valuestring);
-                if (cJSON_IsString(rgname) && rgname->valuestring && strlen(rgname->valuestring) > 0) {
-                    safe_strcpy(dm->display_name, sizeof(dm->display_name), rgname->valuestring);
-                } else {
-                    safe_strcpy(dm->display_name, sizeof(dm->display_name), dm->username);
-                }
-            } else {
-                cJSON *cname = cJSON_GetObjectItemCaseSensitive(chan, "name");
-                if (cJSON_IsString(cname) && strlen(cname->valuestring) > 0) {
+            if (num_recipients > 0) {
+                if (has_custom_name) {
                     safe_strcpy(dm->display_name, sizeof(dm->display_name), cname->valuestring);
-                    safe_strcpy(dm->username, sizeof(dm->username), "group");
                 } else {
-                    safe_strcpy(dm->display_name, sizeof(dm->display_name), "Group DM");
-                    safe_strcpy(dm->username, sizeof(dm->username), "group");
+                    dm->display_name[0] = '\0';
                 }
+
+                dm->username[0] = '\0';
+                for (int r = 0; r < num_recipients; r++) {
+                    cJSON *rec = cJSON_GetArrayItem(recipients, r);
+                    if (!rec) continue;
+                    cJSON *rid = cJSON_GetObjectItemCaseSensitive(rec, "id");
+                    cJSON *rname = cJSON_GetObjectItemCaseSensitive(rec, "username");
+                    cJSON *rgname = cJSON_GetObjectItemCaseSensitive(rec, "global_name");
+
+                    if (r == 0 && cJSON_IsString(rid)) {
+                        safe_strcpy(dm->recipient_id, sizeof(dm->recipient_id), rid->valuestring);
+                    }
+
+                    const char *u = cJSON_IsString(rname) ? rname->valuestring : "";
+                    const char *g = (cJSON_IsString(rgname) && rgname->valuestring && strlen(rgname->valuestring) > 0) ? rgname->valuestring : u;
+
+                    if (!has_custom_name) {
+                        if (r > 0 && strlen(dm->display_name) > 0) {
+                            strncat(dm->display_name, ", ", sizeof(dm->display_name) - strlen(dm->display_name) - 1);
+                        }
+                        strncat(dm->display_name, g, sizeof(dm->display_name) - strlen(dm->display_name) - 1);
+                    }
+
+                    if (strlen(u) > 0) {
+                        if (r > 0 && strlen(dm->username) > 0) {
+                            strncat(dm->username, ", ", sizeof(dm->username) - strlen(dm->username) - 1);
+                        }
+                        strncat(dm->username, u, sizeof(dm->username) - strlen(dm->username) - 1);
+                    }
+                }
+            } else if (has_custom_name) {
+                safe_strcpy(dm->display_name, sizeof(dm->display_name), cname->valuestring);
+                safe_strcpy(dm->username, sizeof(dm->username), "group");
+            } else {
+                safe_strcpy(dm->display_name, sizeof(dm->display_name), "Group DM");
+                safe_strcpy(dm->username, sizeof(dm->username), "group");
             }
 
             state->dm_count++;

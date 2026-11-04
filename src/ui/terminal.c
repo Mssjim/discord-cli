@@ -175,6 +175,8 @@ bool terminal_read_key(KeyEvent *event, int timeout_ms) {
     if (!event) return false;
     event->type = KEY_NONE;
     event->ch = 0;
+    event->mouse_x = 0;
+    event->mouse_y = 0;
 
     HANDLE hIn = (g_hInConsole != INVALID_HANDLE_VALUE) ? g_hInConsole : GetStdHandle(STD_INPUT_HANDLE);
     if (hIn == INVALID_HANDLE_VALUE) return false;
@@ -186,7 +188,7 @@ bool terminal_read_key(KeyEvent *event, int timeout_ms) {
             INPUT_RECORD ir;
             DWORD read_count = 0;
             if (ReadConsoleInputW(hIn, &ir, 1, &read_count) && read_count > 0) {
-                // 1. Mouse wheel event (Map mouse wheel up/down to KEY_UP/KEY_DOWN)
+                // 1. Mouse events: Wheel or Left Click
                 if (ir.EventType == MOUSE_EVENT) {
                     if (ir.Event.MouseEvent.dwEventFlags & MOUSE_WHEELED) {
                         int delta = (short)HIWORD(ir.Event.MouseEvent.dwButtonState);
@@ -195,6 +197,14 @@ bool terminal_read_key(KeyEvent *event, int timeout_ms) {
                             return true;
                         } else if (delta < 0) {
                             event->type = KEY_DOWN;
+                            return true;
+                        }
+                    } else if (ir.Event.MouseEvent.dwEventFlags == 0 || ir.Event.MouseEvent.dwEventFlags == DOUBLE_CLICK) {
+                        // Regular button press or double click
+                        if (ir.Event.MouseEvent.dwButtonState & FROM_LEFT_1ST_BUTTON_PRESSED) {
+                            event->type = KEY_MOUSE_CLICK;
+                            event->mouse_x = ir.Event.MouseEvent.dwMousePosition.X;
+                            event->mouse_y = ir.Event.MouseEvent.dwMousePosition.Y;
                             return true;
                         }
                     }

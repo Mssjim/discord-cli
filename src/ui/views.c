@@ -139,7 +139,7 @@ static void render_scroll_hint(int current_idx, int total_items, int start_idx, 
 }
 
 static void render_main_menu(UIState *ui, DiscordState *state) {
-    char header_title[64];
+    char header_title[128];
     if (strlen(state->username) > 0) {
         snprintf(header_title, sizeof(header_title), "Discord CLI (@%s)", state->username);
     } else {
@@ -216,11 +216,11 @@ static void render_dms_list(UIState *ui, DiscordState *state) {
     if (end_idx > state->dm_count) end_idx = state->dm_count;
 
     for (int i = ui->scroll_offset; i < end_idx; i++) {
-        char label[128];
-        if (strcmp(state->dms[i].username, "group") == 0) {
-            snprintf(label, sizeof(label), "%s", state->dms[i].display_name);
-        } else {
+        char label[512];
+        if (strlen(state->dms[i].username) > 0 && strcmp(state->dms[i].username, "group") != 0) {
             snprintf(label, sizeof(label), "%s (@%s)", state->dms[i].display_name, state->dms[i].username);
+        } else {
+            snprintf(label, sizeof(label), "%s", state->dms[i].display_name);
         }
         render_row(ui->dm_selected_idx == i, label, state->dms[i].unread_count);
     }
@@ -408,6 +408,36 @@ bool ui_handle_input(UIState *ui, DiscordState *state, const char *token, const 
                         state->needs_redraw = true;
                     }
                 }
+            } else if (event->type == KEY_MOUSE_CLICK) {
+                int header_rows = ui->hide_header ? 0 : 2;
+                int term_height = terminal_get_height();
+                int reserved_lines = ui->hide_header ? 2 : 4;
+                int visible_rows = term_height - reserved_lines;
+                if (visible_rows < 3) visible_rows = 3;
+
+                int total_items = 1 + state->guild_count;
+                int end_idx = ui->scroll_offset + visible_rows;
+                if (end_idx > total_items) end_idx = total_items;
+
+                int clicked_idx = ui->scroll_offset + (event->mouse_y - header_rows);
+                if (event->mouse_y >= header_rows && clicked_idx >= ui->scroll_offset && clicked_idx < end_idx) {
+                    ui->main_selected_idx = clicked_idx;
+                    if (ui->main_selected_idx == 0) {
+                        ui->current_view = VIEW_DMS_LIST;
+                        ui->dm_selected_idx = 0;
+                        ui->scroll_offset = 0;
+                        state->needs_redraw = true;
+                    } else {
+                        int guild_idx = ui->main_selected_idx - 1;
+                        if (guild_idx >= 0 && guild_idx < state->guild_count) {
+                            ui->guild_selected_idx = guild_idx;
+                            ui->channel_selected_idx = 0;
+                            ui->scroll_offset = 0;
+                            ui->current_view = VIEW_GUILD_CHANNELS;
+                            state->needs_redraw = true;
+                        }
+                    }
+                }
             }
             break;
         }
@@ -431,8 +461,34 @@ bool ui_handle_input(UIState *ui, DiscordState *state, const char *token, const 
             } else if (event->type == KEY_ENTER) {
                 if (ui->dm_selected_idx >= 0 && ui->dm_selected_idx < state->dm_count) {
                     DiscordDM *dm = &state->dms[ui->dm_selected_idx];
-                    char ch_name[96];
-                    snprintf(ch_name, sizeof(ch_name), "@%s", dm->username);
+                    char ch_name[256];
+                    if (strlen(dm->username) > 0 && strcmp(dm->username, "group") != 0) {
+                        snprintf(ch_name, sizeof(ch_name), "@%s", dm->username);
+                    } else {
+                        snprintf(ch_name, sizeof(ch_name), "%s", dm->display_name);
+                    }
+                    open_channel(ui, state, token, dm->id, ch_name);
+                }
+            } else if (event->type == KEY_MOUSE_CLICK) {
+                int header_rows = ui->hide_header ? 0 : 2;
+                int term_height = terminal_get_height();
+                int reserved_lines = ui->hide_header ? 2 : 4;
+                int visible_rows = term_height - reserved_lines;
+                if (visible_rows < 3) visible_rows = 3;
+
+                int end_idx = ui->scroll_offset + visible_rows;
+                if (end_idx > state->dm_count) end_idx = state->dm_count;
+
+                int clicked_idx = ui->scroll_offset + (event->mouse_y - header_rows);
+                if (event->mouse_y >= header_rows && clicked_idx >= ui->scroll_offset && clicked_idx < end_idx) {
+                    ui->dm_selected_idx = clicked_idx;
+                    DiscordDM *dm = &state->dms[clicked_idx];
+                    char ch_name[256];
+                    if (strlen(dm->username) > 0 && strcmp(dm->username, "group") != 0) {
+                        snprintf(ch_name, sizeof(ch_name), "@%s", dm->username);
+                    } else {
+                        snprintf(ch_name, sizeof(ch_name), "%s", dm->display_name);
+                    }
                     open_channel(ui, state, token, dm->id, ch_name);
                 }
             }
@@ -460,7 +516,26 @@ bool ui_handle_input(UIState *ui, DiscordState *state, const char *token, const 
                 DiscordGuild *guild = &state->guilds[ui->guild_selected_idx];
                 if (ui->channel_selected_idx >= 0 && ui->channel_selected_idx < guild->channel_count) {
                     DiscordChannel *ch = &guild->channels[ui->channel_selected_idx];
-                    char full_ch_name[96];
+                    char full_ch_name[128];
+                    snprintf(full_ch_name, sizeof(full_ch_name), "%s > #%s", guild->name, ch->name);
+                    open_channel(ui, state, token, ch->id, full_ch_name);
+                }
+            } else if (event->type == KEY_MOUSE_CLICK) {
+                DiscordGuild *guild = &state->guilds[ui->guild_selected_idx];
+                int header_rows = ui->hide_header ? 0 : 2;
+                int term_height = terminal_get_height();
+                int reserved_lines = ui->hide_header ? 2 : 4;
+                int visible_rows = term_height - reserved_lines;
+                if (visible_rows < 3) visible_rows = 3;
+
+                int end_idx = ui->scroll_offset + visible_rows;
+                if (end_idx > guild->channel_count) end_idx = guild->channel_count;
+
+                int clicked_idx = ui->scroll_offset + (event->mouse_y - header_rows);
+                if (event->mouse_y >= header_rows && clicked_idx >= ui->scroll_offset && clicked_idx < end_idx) {
+                    ui->channel_selected_idx = clicked_idx;
+                    DiscordChannel *ch = &guild->channels[clicked_idx];
+                    char full_ch_name[128];
                     snprintf(full_ch_name, sizeof(full_ch_name), "%s > #%s", guild->name, ch->name);
                     open_channel(ui, state, token, ch->id, full_ch_name);
                 }

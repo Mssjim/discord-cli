@@ -45,8 +45,8 @@ typedef struct {
 typedef struct {
     char id[36]; // channel_id
     char recipient_id[36];
-    char username[64];
-    char display_name[64];
+    char username[256];
+    char display_name[256];
     int unread_count;
     char last_message_id[36];
 } DiscordDM;
@@ -87,4 +87,3 @@ typedef struct {
 } DiscordState;
 
 #endif // DISCORD_TYPES_H
-

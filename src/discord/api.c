@@ -361,20 +361,46 @@ bool discord_api_fetch_dms(const char *token, DiscordDM *out_dms, int max_dms, i
             strncpy_s(dm->last_message_id, sizeof(dm->last_message_id), last_msg->valuestring, _TRUNCATE);
         }
 
-        if (cJSON_IsArray(recipients) && cJSON_GetArraySize(recipients) > 0) {
-            cJSON *rec = cJSON_GetArrayItem(recipients, 0);
-            cJSON *rid = cJSON_GetObjectItemCaseSensitive(rec, "id");
-            cJSON *rname = cJSON_GetObjectItemCaseSensitive(rec, "username");
-            cJSON *rgname = cJSON_GetObjectItemCaseSensitive(rec, "global_name");
+        int num_recipients = (cJSON_IsArray(recipients)) ? cJSON_GetArraySize(recipients) : 0;
+        bool has_custom_name = (cJSON_IsString(cname) && cname->valuestring && strlen(cname->valuestring) > 0);
 
-            if (cJSON_IsString(rid)) strncpy_s(dm->recipient_id, sizeof(dm->recipient_id), rid->valuestring, _TRUNCATE);
-            if (cJSON_IsString(rname)) strncpy_s(dm->username, sizeof(dm->username), rname->valuestring, _TRUNCATE);
-            if (cJSON_IsString(rgname) && rgname->valuestring && strlen(rgname->valuestring) > 0) {
-                strncpy_s(dm->display_name, sizeof(dm->display_name), rgname->valuestring, _TRUNCATE);
+        if (num_recipients > 0) {
+            if (has_custom_name) {
+                strncpy_s(dm->display_name, sizeof(dm->display_name), cname->valuestring, _TRUNCATE);
             } else {
-                strncpy_s(dm->display_name, sizeof(dm->display_name), dm->username, _TRUNCATE);
+                dm->display_name[0] = '\0';
             }
-        } else if (cJSON_IsString(cname) && strlen(cname->valuestring) > 0) {
+
+            dm->username[0] = '\0';
+            for (int r = 0; r < num_recipients; r++) {
+                cJSON *rec = cJSON_GetArrayItem(recipients, r);
+                if (!rec) continue;
+                cJSON *rid = cJSON_GetObjectItemCaseSensitive(rec, "id");
+                cJSON *rname = cJSON_GetObjectItemCaseSensitive(rec, "username");
+                cJSON *rgname = cJSON_GetObjectItemCaseSensitive(rec, "global_name");
+
+                if (r == 0 && cJSON_IsString(rid)) {
+                    strncpy_s(dm->recipient_id, sizeof(dm->recipient_id), rid->valuestring, _TRUNCATE);
+                }
+
+                const char *u = cJSON_IsString(rname) ? rname->valuestring : "";
+                const char *g = (cJSON_IsString(rgname) && rgname->valuestring && strlen(rgname->valuestring) > 0) ? rgname->valuestring : u;
+
+                if (!has_custom_name) {
+                    if (r > 0 && strlen(dm->display_name) > 0) {
+                        strncat(dm->display_name, ", ", sizeof(dm->display_name) - strlen(dm->display_name) - 1);
+                    }
+                    strncat(dm->display_name, g, sizeof(dm->display_name) - strlen(dm->display_name) - 1);
+                }
+
+                if (strlen(u) > 0) {
+                    if (r > 0 && strlen(dm->username) > 0) {
+                        strncat(dm->username, ", ", sizeof(dm->username) - strlen(dm->username) - 1);
+                    }
+                    strncat(dm->username, u, sizeof(dm->username) - strlen(dm->username) - 1);
+                }
+            }
+        } else if (has_custom_name) {
             strncpy_s(dm->display_name, sizeof(dm->display_name), cname->valuestring, _TRUNCATE);
             strncpy_s(dm->username, sizeof(dm->username), "group", _TRUNCATE);
         } else {
