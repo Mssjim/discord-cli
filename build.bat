@@ -178,11 +178,17 @@ goto :verify_binary
 :direct_gcc
 echo Compiling directly with GCC...
 if not exist "build\Release" mkdir "build\Release"
+set "RES_OBJ="
+where windres >nul 2>nul
+if not errorlevel 1 (
+    windres src/app.rc -Isrc -O coff -o build/app.res
+    if not errorlevel 1 set "RES_OBJ=build/app.res"
+)
 gcc -std=c99 -O2 -DNDEBUG -D_WIN32_WINNT=0x0A00 -DMINGW_HAS_SECURE_API=1 -Wall -Wno-unknown-pragmas ^
     -Isrc -Ilib/cjson ^
     src/main.c src/config.c src/discord/state.c src/discord/api.c ^
-    src/discord/gateway.c src/ui/terminal.c src/ui/views.c lib/cjson/cJSON.c ^
-    -lwinhttp -static-libgcc -s -o "build\Release\discord-cli.exe"
+    src/discord/gateway.c src/ui/terminal.c src/ui/views.c lib/cjson/cJSON.c %RES_OBJ% ^
+    -lwinhttp -static-libgcc -o "build\Release\discord-cli.exe"
 if errorlevel 1 (
     echo Error: Direct GCC compilation failed.
     exit /b 1

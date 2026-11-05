@@ -19,6 +19,11 @@ set(SOURCES
     lib/cjson/cJSON.c
 )
 
+if(WIN32)
+    enable_language(RC)
+    list(APPEND SOURCES src/app.rc)
+endif()
+
 add_executable(discord-cli ${SOURCES})
 
 set_target_properties(discord-cli PROPERTIES
@@ -39,7 +44,7 @@ if(WIN32)
     elseif(MINGW)
         target_compile_definitions(discord-cli PRIVATE MINGW_HAS_SECURE_API=1)
         target_compile_options(discord-cli PRIVATE -Wall -Wno-unknown-pragmas)
-        target_link_options(discord-cli PRIVATE -static-libgcc -s)
+        target_link_options(discord-cli PRIVATE -static-libgcc)
     endif()
 else()
     target_link_libraries(discord-cli PRIVATE pthread)
